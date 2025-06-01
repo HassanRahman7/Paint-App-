@@ -1,7 +1,6 @@
 
 "use client";
 
-import type { LegacyRef } from 'react';
 import React, { useRef, useState, useEffect } from 'react';
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
