@@ -13,25 +13,25 @@ interface Point {
 export interface TextElementData {
   id: string;
   text: string;
-  x: number; y: number; 
+  x: number; y: number; // Logical canvas coordinates
   fontFamily: string;
-  fontSize: number;
+  fontSize: number; // Logical font size
   textColor: string;
   textAlign: 'left' | 'center' | 'right';
   isBold: boolean;
   isItalic: boolean;
   isUnderline: boolean;
-  measuredWidth: number; 
-  measuredHeight: number; 
+  measuredWidth: number; // Logical width
+  measuredHeight: number; // Logical height (based on fontSize)
 }
 
 interface ShapeAction {
   type: Exclude<DrawingTool, 'text' | 'eraser'>;
   strokeColor: string;
-  strokeWidth: number;
-  points?: Point[]; 
-  startPoint?: Point; 
-  endPoint?: Point; 
+  strokeWidth: number; // Logical stroke width
+  points?: Point[]; // Logical points
+  startPoint?: Point; // Logical point
+  endPoint?: Point; // Logical point
   fillColor?: string; 
   isFilled?: boolean; 
 }
@@ -39,13 +39,13 @@ interface ShapeAction {
 interface TextAction {
     type: 'text';
     id: string; 
-    data: TextElementData; 
+    data: TextElementData; // Contains logical coordinates and sizes
 }
 
 interface EraserAction {
     type: 'eraser';
-    size: number;
-    points: Point[];
+    size: number; // Logical eraser size
+    points: Point[]; // Logical points
 }
 
 type DrawingAction = ShapeAction | TextAction | EraserAction;
@@ -59,18 +59,18 @@ export interface CanvasRendererHandle {
   getCanvasElement: () => HTMLCanvasElement | null;
   addTextElement: (data: TextElementData) => void;
   updateTextElement: (id: string, newData: TextElementData) => void;
-  getTextElementIdAtPoint: (point: Point) => Promise<string | null>;
+  getTextElementIdAtPoint: (point: Point) => Promise<string | null>; // Point is logical
   getTextElementById: (id: string) => Promise<TextElementData | null>;
 }
 
 interface CanvasRendererProps {
   tool: DrawingTool;
   strokeColor: string;
-  strokeWidth: number; // Also used for eraser size
+  strokeWidth: number; // Logical stroke/eraser size
   fillColor: string;
   isFillEnabled: boolean;
   currentEditingTextId?: string | null; 
-  onTextDragEnd?: (id: string, x: number, y: number, textElement: TextElementData | null) => void;
+  onTextDragEnd?: (id: string, x: number, y: number, textElement: TextElementData | null) => void; // x, y are logical
   onTextSelect?: (id: string) => void; 
 }
 
@@ -82,18 +82,18 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     const containerRef = useRef<HTMLDivElement>(null);
 
     const [isDrawing, setIsDrawing] = useState(false); 
-    const [startPoint, setStartPoint] = useState<Point | null>(null); 
-    const [currentPath, setCurrentPath] = useState<Point[]>([]); 
+    const [startPoint, setStartPoint] = useState<Point | null>(null); // Logical point
+    const [currentPath, setCurrentPath] = useState<Point[]>([]); // Array of logical points
     
     const [drawingHistory, setDrawingHistory] = useState<DrawingAction[]>([]);
     const [historyIndex, setHistoryIndex] = useState<number>(-1);
     const [canvasSnapshotForPreview, setCanvasSnapshotForPreview] = useState<ImageData | null>(null);
 
     const [draggingTextId, setDraggingTextId] = useState<string | null>(null);
-    const [dragStartOffset, setDragStartOffset] = useState<Point | null>(null); 
-    const [currentDragPosition, setCurrentDragPosition] = useState<Point | null>(null);
+    const [dragStartOffset, setDragStartOffset] = useState<Point | null>(null); // Logical offset
+    const [currentDragPosition, setCurrentDragPosition] = useState<Point | null>(null); // Logical position
 
-    const [mouseCanvasPosition, setMouseCanvasPosition] = useState<Point | null>(null);
+    const [mouseCanvasPosition, setMouseCanvasPosition] = useState<Point | null>(null); // Logical position for eraser preview
     const [isMouseOnCanvas, setIsMouseOnCanvas] = useState<boolean>(false);
 
 
@@ -103,46 +103,48 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       const rect = canvas.getBoundingClientRect();
       let clientX, clientY;
 
-      if ('clientX' in event && 'clientY' in event) { // MouseEvent, React.MouseEvent
+      if ('clientX' in event && 'clientY' in event) { 
         clientX = event.clientX; clientY = event.clientY;
-      } else if ('touches' in event && event.touches && event.touches.length > 0) { // TouchEvent, React.TouchEvent (start/move)
+      } else if ('touches' in event && event.touches && event.touches.length > 0) { 
         clientX = event.touches[0].clientX; clientY = event.touches[0].clientY;
-      } else if ('changedTouches' in event && event.changedTouches && event.changedTouches.length > 0) { // TouchEvent, React.TouchEvent (end)
+      } else if ('changedTouches' in event && event.changedTouches && event.changedTouches.length > 0) { 
         clientX = event.changedTouches[0].clientX; clientY = event.changedTouches[0].clientY;
       } else { return null; }
       
       if (clientX === undefined || clientY === undefined) return null;
-      const dpr = window.devicePixelRatio || 1;
-      return { x: (clientX - rect.left) * dpr, y: (clientY - rect.top) * dpr };
+      // Return logical coordinates (CSS pixels relative to canvas)
+      return { x: clientX - rect.left, y: clientY - rect.top };
     }, []);
 
     const drawTextElement = (ctx: CanvasRenderingContext2D, data: TextElementData, isSelected?: boolean) => {
-        ctx.font = `${data.isBold ? 'bold ' : ''}${data.isItalic ? 'italic ' : ''}${data.fontSize}px ${data.fontFamily}`;
+        ctx.font = `${data.isBold ? 'bold ' : ''}${data.isItalic ? 'italic ' : ''}${data.fontSize}px ${data.fontFamily}`; // fontSize is logical
         ctx.fillStyle = data.textColor;
         ctx.textAlign = data.textAlign;
         
+        // data.x, data.y are logical
         let textX = data.x;
-        if (data.textAlign === 'center') textX = data.x;
+        if (data.textAlign === 'center') textX = data.x; // textAlign handles this for fillText
         else if (data.textAlign === 'right') textX = data.x;
 
         ctx.fillText(data.text, textX, data.y);
 
         if (data.isUnderline) {
-            const metrics = ctx.measureText(data.text);
+            const metrics = ctx.measureText(data.text); // metrics.width is logical
             let underlineStartX = data.x;
             if (data.textAlign === 'left') underlineStartX = data.x;
             else if (data.textAlign === 'center') underlineStartX = data.x - metrics.width / 2;
             else underlineStartX = data.x - metrics.width;
-            const baselineOffset = data.fontSize * 0.1; 
-            ctx.fillRect(underlineStartX, data.y + baselineOffset + 2, metrics.width, Math.max(1, data.fontSize / 15));
+            const baselineOffset = data.fontSize * 0.1; // logical
+            ctx.fillRect(underlineStartX, data.y + baselineOffset + 2, metrics.width, Math.max(1, data.fontSize / 15)); // underline thickness is logical
         }
         
         if (isSelected) {
             ctx.strokeStyle = 'rgba(0, 123, 255, 0.7)';
-            ctx.lineWidth = 1 * (window.devicePixelRatio || 1);
-            ctx.setLineDash([4, 2]);
-            const padding = 5 * (window.devicePixelRatio || 1);
+            ctx.lineWidth = 1; // Logical lineWidth for selection box
+            ctx.setLineDash([4 / (window.devicePixelRatio || 1), 2 / (window.devicePixelRatio || 1)]); // Adjust dash for visual consistency if needed, or keep logical
+            const padding = 5; // Logical padding
             let boxX = data.x;
+            // data.measuredWidth and data.measuredHeight are logical
             if (data.textAlign === 'left') boxX = data.x - padding;
             else if (data.textAlign === 'center') boxX = data.x - data.measuredWidth / 2 - padding;
             else boxX = data.x - data.measuredWidth - padding;
@@ -154,11 +156,11 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     
     const drawShapeAction = (ctx: CanvasRenderingContext2D, action: ShapeAction) => { 
       ctx.strokeStyle = action.strokeColor;
-      ctx.lineWidth = action.strokeWidth;
+      ctx.lineWidth = action.strokeWidth; // Logical width
       ctx.fillStyle = action.fillColor || '#000000';
       ctx.globalCompositeOperation = 'source-over';
 
-
+      // All points (action.points, action.startPoint, action.endPoint) are logical
       switch (action.type) {
         case 'freehand':
           if (action.points && action.points.length > 1) {
@@ -179,14 +181,14 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
             const rectY = Math.min(action.startPoint.y, action.endPoint.y);
             const rectWidth = Math.abs(action.startPoint.x - action.endPoint.x);
             const rectHeight = Math.abs(action.startPoint.y - action.endPoint.y);
-            ctx.beginPath(); ctx.rect(rectX, rectY, rectWidth, rectHeight);
+            ctx.beginPath(); ctx.rect(rectX, rectY, rectWidth, rectHeight); // Logical dimensions
             if (action.isFilled) ctx.fill();
             ctx.stroke();
           }
           break;
         case 'circle':
           if (action.startPoint && action.endPoint) {
-            const radius = Math.sqrt(Math.pow(action.endPoint.x - action.startPoint.x, 2) + Math.pow(action.endPoint.y - action.startPoint.y, 2));
+            const radius = Math.sqrt(Math.pow(action.endPoint.x - action.startPoint.x, 2) + Math.pow(action.endPoint.y - action.startPoint.y, 2)); // Logical radius
             ctx.beginPath(); ctx.arc(action.startPoint.x, action.startPoint.y, radius, 0, 2 * Math.PI);
             if (action.isFilled) ctx.fill();
             ctx.stroke();
@@ -209,47 +211,47 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       const ctx = contextRef.current;
       const canvas = canvasRef.current;
       if (!ctx || !canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+      
+      // Clear using logical dimensions, context.scale handles the rest
+      ctx.clearRect(0, 0, canvas.width / (window.devicePixelRatio || 1), canvas.height / (window.devicePixelRatio || 1));
 
       const latestTextElements = new Map<string, TextElementData>();
 
       for (let i = 0; i <= historyIndex; i++) {
         const action = drawingHistory[i];
-        ctx.globalCompositeOperation = 'source-over'; // Default composite operation
+        ctx.globalCompositeOperation = 'source-over';
 
         if (action.type === 'text') {
+            // Ensure measuredWidth/Height are logical, based on logical fontSize
             ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
-            const metrics = ctx.measureText(action.data.text);
-            const updatedData = { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize };
+            const metrics = ctx.measureText(action.data.text); // metrics.width is logical
+            const updatedData = { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize }; // fontSize is logical height approximation
             latestTextElements.set(action.id, updatedData);
         } else if (action.type === 'eraser') {
-            const { points, size } = action;
-            // No need to save/restore here if clearRect is the only thing
-            for (const point of points) {
-                ctx.clearRect(point.x - size / 2, point.y - size / 2, size, size);
+            const { points, size } = action; // size is logical
+            for (const point of points) { // points are logical
+                ctx.clearRect(point.x - size / 2, point.y - size / 2, size, size); // clearRect uses logical coords/size
             }
-        } else { // ShapeAction
-            drawShapeAction(ctx, action as ShapeAction);
+        } else { 
+            drawShapeAction(ctx, action as ShapeAction); // Uses logical coords/sizes
         }
       }
       
       latestTextElements.forEach((textData, id) => {
-          if (draggingTextId === id && currentDragPosition) {
+          if (draggingTextId === id && currentDragPosition) { // currentDragPosition is logical
               drawTextElement(ctx, { ...textData, x: currentDragPosition.x, y: currentDragPosition.y }, currentEditingTextId === id);
           } else {
               drawTextElement(ctx, textData, currentEditingTextId === id);
           }
       });
 
-      // Draw eraser preview if tool is eraser, not drawing, and mouse is on canvas
-      if (tool === 'eraser' && !isDrawing && isMouseOnCanvas && mouseCanvasPosition && ctx) {
+      if (tool === 'eraser' && !isDrawing && isMouseOnCanvas && mouseCanvasPosition && ctx) { // mouseCanvasPosition is logical
           ctx.save();
           ctx.globalCompositeOperation = 'source-over';
           ctx.strokeStyle = 'rgba(100, 100, 100, 0.7)'; 
-          ctx.lineWidth = 1;
-          const previewSize = strokeWidth; 
-          ctx.strokeRect(mouseCanvasPosition.x - previewSize / 2, mouseCanvasPosition.y - previewSize / 2, previewSize, previewSize);
+          ctx.lineWidth = 1; // Logical line width for preview
+          const previewSize = strokeWidth; // strokeWidth is logical eraser size
+          ctx.strokeRect(mouseCanvasPosition.x - previewSize / 2, mouseCanvasPosition.y - previewSize / 2, previewSize, previewSize); // logical coords/size
           ctx.restore();
       }
 
@@ -259,17 +261,22 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     const initializeCanvas = useCallback(() => {
       const canvas = canvasRef.current;
       if (!canvas || !containerRef.current) return;
-      const context = canvas.getContext('2d', { willReadFrequently: true }); // willReadFrequently for getImageData
+      const context = canvas.getContext('2d', { willReadFrequently: true });
       if (!context) return;
 
       const dpr = window.devicePixelRatio || 1;
-      const rect = containerRef.current.getBoundingClientRect();
+      const rect = containerRef.current.getBoundingClientRect(); // Physical dimensions of container
+      
+      // Set canvas backing store size (physical pixels)
       canvas.width = Math.floor(rect.width * dpr);
       canvas.height = Math.floor(rect.height * dpr);
+      
+      // Set display size (CSS pixels)
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
 
-      context.scale(dpr, dpr); 
+      context.scale(dpr, dpr); // Scale context to work with logical coordinates
+      
       context.lineCap = 'round';
       context.lineJoin = 'round';
       context.textBaseline = 'alphabetic'; 
@@ -286,26 +293,27 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       return () => obs.unobserve(resizeTarget);
     }, [initializeCanvas]);
 
-    useEffect(() => { // Effect to redraw when mouse position changes for eraser preview
+    useEffect(() => { 
         if (tool === 'eraser' && !isDrawing) {
             redrawCanvas();
         }
     }, [mouseCanvasPosition, isMouseOnCanvas, tool, isDrawing, redrawCanvas]);
 
-    const getTextElementAtPointInternal = useCallback((point: Point): TextElementData | null => {
+    const getTextElementAtPointInternal = useCallback((point: Point): TextElementData | null => { // point is logical
         const ctx = contextRef.current;
         if (!ctx) return null;
         const latestTextElements = new Map<string, TextElementData>();
         for (let i = historyIndex; i >= 0; i--) {
             const action = drawingHistory[i];
             if (action.type === 'text' && !latestTextElements.has(action.id)) {
-                ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
-                const metrics = ctx.measureText(action.data.text);
-                latestTextElements.set(action.id, { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize });
+                ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`; // fontSize is logical
+                const metrics = ctx.measureText(action.data.text); // metrics.width is logical
+                latestTextElements.set(action.id, { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize }); // fontSize for logical height
             }
         }
         
         for (const textData of Array.from(latestTextElements.values()).reverse()) { 
+            // All textData dimensions (x, y, measuredWidth, measuredHeight) are logical
             let x1 = textData.x;
             if (textData.textAlign === 'left') x1 = textData.x;
             else if (textData.textAlign === 'center') x1 = textData.x - textData.measuredWidth / 2;
@@ -326,17 +334,17 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     const startDrawingInternal = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
       if (event.nativeEvent instanceof TouchEvent) event.preventDefault();
       const nativeEvent = event.nativeEvent;
-      const coords = getCoordinates(nativeEvent);
+      const coords = getCoordinates(nativeEvent); // coords are logical
       if (!coords || !contextRef.current) return;
 
       if (tool === 'text') {
-        const clickedText = getTextElementAtPointInternal(coords);
-        if (clickedText) {
+        const clickedText = getTextElementAtPointInternal(coords); // coords is logical
+        if (clickedText) { // clickedText has logical coords
             setDraggingTextId(clickedText.id);
-            const offsetX = coords.x - clickedText.x;
-            const offsetY = coords.y - clickedText.y;
+            const offsetX = coords.x - clickedText.x; // logical offset
+            const offsetY = coords.y - clickedText.y; // logical offset
             setDragStartOffset({ x: offsetX, y: offsetY });
-            setCurrentDragPosition({x: clickedText.x, y: clickedText.y});
+            setCurrentDragPosition({x: clickedText.x, y: clickedText.y}); // logical position
              if(onTextSelect) onTextSelect(clickedText.id);
         } else {
              setDraggingTextId(null); 
@@ -345,30 +353,32 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       }
 
       setIsDrawing(true);
-      setStartPoint(coords);
+      setStartPoint(coords); // coords is logical
       if (tool === 'freehand' || tool === 'eraser') {
-        setCurrentPath([coords]);
-        if (tool === 'eraser') { // Apply first clearRect for eraser
-            const eraserSize = strokeWidth;
-            contextRef.current.clearRect(coords.x - eraserSize / 2, coords.y - eraserSize / 2, eraserSize, eraserSize);
+        setCurrentPath([coords]); // Store logical coords
+        if (tool === 'eraser') {
+            const eraserSize = strokeWidth; // logical size
+            contextRef.current.clearRect(coords.x - eraserSize / 2, coords.y - eraserSize / 2, eraserSize, eraserSize); // Use logical coords and size
         }
-      } else { // For shapes needing preview
+      } else { 
         const dpr = window.devicePixelRatio || 1;
+        // getImageData expects physical pixel coords if context not scaled, but here context IS scaled.
+        // So, specify logical dimensions for getImageData.
         setCanvasSnapshotForPreview(contextRef.current.getImageData(0, 0, contextRef.current.canvas.width / dpr, contextRef.current.canvas.height / dpr));
       }
     }, [getCoordinates, tool, getTextElementAtPointInternal, onTextSelect, strokeWidth]);
 
     const drawInternal = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
       const ctx = contextRef.current;
-      if (!ctx || (!startPoint && !draggingTextId)) return; // Ensure startPoint or draggingTextId is set
+      if (!ctx || (!startPoint && !draggingTextId)) return;
       if (event.nativeEvent instanceof TouchEvent) event.preventDefault();
-      const currentCoords = getCoordinates(event.nativeEvent);
+      const currentCoords = getCoordinates(event.nativeEvent); // currentCoords are logical
       if (!currentCoords) return;
 
-      if (draggingTextId && dragStartOffset) {
+      if (draggingTextId && dragStartOffset) { // dragStartOffset and currentCoords are logical
         const newX = currentCoords.x - dragStartOffset.x;
         const newY = currentCoords.y - dragStartOffset.y;
-        setCurrentDragPosition({x: newX, y: newY});
+        setCurrentDragPosition({x: newX, y: newY}); // Store logical position
         requestAnimationFrame(redrawCanvas); 
         return;
       }
@@ -376,50 +386,51 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       if (!isDrawing || tool === 'text' || !startPoint) return; 
 
       if (tool === 'eraser') {
-          setCurrentPath(prevPath => [...prevPath, currentCoords]);
-          const eraserSize = strokeWidth; // prop
-          ctx.clearRect(currentCoords.x - eraserSize / 2, currentCoords.y - eraserSize / 2, eraserSize, eraserSize);
-          return; // Eraser live drawing handled
+          setCurrentPath(prevPath => [...prevPath, currentCoords]); // Store logical coords
+          const eraserSize = strokeWidth; // logical size
+          ctx.clearRect(currentCoords.x - eraserSize / 2, currentCoords.y - eraserSize / 2, eraserSize, eraserSize); // Use logical coords and size
+          return;
       }
       
       ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = strokeWidth;
+      ctx.lineWidth = strokeWidth; // logical width
       ctx.fillStyle = fillColor;
       ctx.globalCompositeOperation = 'source-over';
 
       if (tool === 'freehand') {
-        const prevCurrentPath = currentPathRef.current; // Use ref for most up-to-date path
-        setCurrentPath(prevPath => [...prevPath, currentCoords]);
-        currentPathRef.current = [...prevCurrentPath, currentCoords]; // Update ref
+        const prevCurrentPath = currentPathRef.current; // Array of logical points
+        setCurrentPath(prevPath => [...prevPath, currentCoords]); // Store logical coords
+        currentPathRef.current = [...prevCurrentPath, currentCoords];
 
         ctx.beginPath();
         if (prevCurrentPath.length > 0) {
              ctx.moveTo(prevCurrentPath[prevCurrentPath.length-1].x, prevCurrentPath[prevCurrentPath.length-1].y);
-        } else if (startPoint) {
-            ctx.moveTo(startPoint.x, startPoint.y); // Fallback if path somehow empty
+        } else if (startPoint) { // startPoint is logical
+            ctx.moveTo(startPoint.x, startPoint.y);
         }
-        ctx.lineTo(currentCoords.x, currentCoords.y);
+        ctx.lineTo(currentCoords.x, currentCoords.y); // currentCoords is logical
         ctx.stroke();
       } else { 
-        if (canvasSnapshotForPreview) ctx.putImageData(canvasSnapshotForPreview, 0, 0);
+        if (canvasSnapshotForPreview) ctx.putImageData(canvasSnapshotForPreview, 0, 0); // putImageData expects physical data, but draws onto scaled context
         else redrawCanvas(); 
         
+        // startPoint and currentCoords are logical
         const tempAction: ShapeAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser'>, strokeColor, strokeWidth, fillColor, isFilled: isFillEnabled, startPoint, endPoint: currentCoords };
-        drawShapeAction(ctx, tempAction);
+        drawShapeAction(ctx, tempAction); // drawShapeAction uses logical coords
       }
     }, [isDrawing, startPoint, getCoordinates, tool, strokeColor, strokeWidth, fillColor, isFillEnabled, canvasSnapshotForPreview, redrawCanvas, draggingTextId, dragStartOffset]);
     
-    const currentPathRef = useRef<Point[]>([]); // Ref to hold currentPath for freehand
+    const currentPathRef = useRef<Point[]>([]);
     useEffect(() => {
         currentPathRef.current = currentPath;
     }, [currentPath]);
 
 
     const handleMouseUpTouchEnd = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-        if (draggingTextId && currentDragPosition && onTextDragEnd) {
+        if (draggingTextId && currentDragPosition && onTextDragEnd) { // currentDragPosition is logical
             const textElement = drawingHistory.slice(0, historyIndex + 1).reverse()
                 .find(act => act.type === 'text' && act.id === draggingTextId) as TextAction | undefined;
-            if (textElement) {
+            if (textElement) { // textElement.data contains logical x,y
                  onTextDragEnd(draggingTextId, currentDragPosition.x, currentDragPosition.y, textElement.data);
             }
             setDraggingTextId(null); setDragStartOffset(null); setCurrentDragPosition(null);
@@ -433,8 +444,9 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         }
 
         const nativeEvent = event.nativeEvent;
-        const finalCoords = getCoordinates(nativeEvent);
+        const finalCoords = getCoordinates(nativeEvent); // finalCoords are logical
         let newAction: DrawingAction | null = null;
+        // pathForAction contains logical points
         const pathForAction = [...currentPathRef.current, ...(finalCoords && currentPathRef.current.length > 0 && currentPathRef.current[currentPathRef.current.length-1].x !== finalCoords.x && currentPathRef.current[currentPathRef.current.length-1].y !== finalCoords.y ? [finalCoords] : finalCoords && currentPathRef.current.length === 0 ? [finalCoords] : [])];
 
 
@@ -444,9 +456,9 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
             }
         } else if (tool === 'eraser') {
             if (pathForAction.length > 0) {
-                newAction = { type: 'eraser', points: pathForAction, size: strokeWidth };
+                newAction = { type: 'eraser', points: pathForAction, size: strokeWidth }; // strokeWidth is logical size
             }
-        } else if (finalCoords) { // Shapes
+        } else if (finalCoords) { // Shapes, startPoint and finalCoords are logical
             newAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser' | 'freehand'>, startPoint, endPoint: finalCoords, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined };
         } else if (pathForAction.length > 0 && tool !== 'freehand' && tool !== 'eraser') { 
              newAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser' | 'freehand'>, startPoint, endPoint: pathForAction[pathForAction.length -1] || startPoint, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined};
@@ -460,13 +472,14 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         }
         
         setIsDrawing(false); setStartPoint(null); setCurrentPath([]); currentPathRef.current = []; setCanvasSnapshotForPreview(null);
-        if (newAction) requestAnimationFrame(redrawCanvas); // Redraw with the new action committed
+        if (newAction) requestAnimationFrame(redrawCanvas);
     }, [isDrawing, startPoint, tool, strokeColor, strokeWidth, fillColor, isFillEnabled, drawingHistory, historyIndex, redrawCanvas, getCoordinates, draggingTextId, currentDragPosition, onTextDragEnd]);
 
     useImperativeHandle(ref, () => ({
       clearCanvas: () => {
         if (contextRef.current && canvasRef.current) {
           const dpr = window.devicePixelRatio || 1;
+          // Clear using logical dimensions
           contextRef.current.clearRect(0, 0, canvasRef.current.width / dpr, canvasRef.current.height / dpr);
           setDrawingHistory([]);
           setHistoryIndex(-1);
@@ -474,13 +487,16 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       },
       downloadDrawing: (filename: string) => {
         if (canvasRef.current && contextRef.current) {
-            const canvas = canvasRef.current;
+            const canvas = canvasRef.current; // This is the high-res canvas
             const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
+            // tempCanvas should match physical dimensions of the source canvas
+            tempCanvas.width = canvas.width; 
+            tempCanvas.height = canvas.height;
             const tempCtx = tempCanvas.getContext('2d');
             if (tempCtx) {
-                tempCtx.fillStyle = '#FFFFFF'; tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-                tempCtx.drawImage(canvas, 0, 0);
+                tempCtx.fillStyle = '#FFFFFF'; // Draw white background on temp canvas
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height); // Fill physical dimensions
+                tempCtx.drawImage(canvas, 0, 0); // Draw source (high-res) canvas onto temp (high-res) canvas
                 const dataURL = tempCanvas.toDataURL('image/png');
                 const link = document.createElement('a');
                 link.href = dataURL; link.download = filename;
@@ -501,10 +517,10 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         }
       },
       getCanvasElement: () => canvasRef.current,
-      addTextElement: (data: TextElementData) => {
+      addTextElement: (data: TextElementData) => { // data contains logical coords/sizes
         const newHistory = drawingHistory.slice(0, historyIndex + 1);
         const ctx = contextRef.current; let finalData = data;
-        if(ctx){
+        if(ctx){ // Calculate logical measuredWidth/Height
             ctx.font = `${data.isBold ? 'bold ' : ''}${data.isItalic ? 'italic ' : ''}${data.fontSize}px ${data.fontFamily}`;
             const metrics = ctx.measureText(data.text);
             finalData = { ...data, measuredWidth: metrics.width, measuredHeight: data.fontSize };
@@ -513,10 +529,10 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         setHistoryIndex(newHistory.length);
         requestAnimationFrame(redrawCanvas);
       },
-      updateTextElement: (id: string, newData: TextElementData) => {
+      updateTextElement: (id: string, newData: TextElementData) => { // newData contains logical coords/sizes
         const newHistory = drawingHistory.slice(0, historyIndex + 1);
          const ctx = contextRef.current; let finalData = newData;
-        if(ctx){
+        if(ctx){ // Calculate logical measuredWidth/Height
             ctx.font = `${newData.isBold ? 'bold ' : ''}${newData.isItalic ? 'italic ' : ''}${newData.fontSize}px ${newData.fontFamily}`;
             const metrics = ctx.measureText(newData.text);
             finalData = { ...newData, measuredWidth: metrics.width, measuredHeight: newData.fontSize };
@@ -525,18 +541,18 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         setHistoryIndex(newHistory.length);
         requestAnimationFrame(redrawCanvas);
       },
-      getTextElementIdAtPoint: async (point: Point): Promise<string | null> => getTextElementAtPointInternal(point)?.id || null,
+      getTextElementIdAtPoint: async (point: Point): Promise<string | null> => getTextElementAtPointInternal(point)?.id || null, // point is logical
       getTextElementById: async (id: string): Promise<TextElementData | null> => {
         for (let i = historyIndex; i >= 0; i--) {
             const action = drawingHistory[i];
             if (action.type === 'text' && action.id === id) {
                 const ctx = contextRef.current;
-                if(ctx) {
+                if(ctx) { // Ensure logical measuredWidth/Height are part of the returned data
                     ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
                     const metrics = ctx.measureText(action.data.text);
                     return { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize };
                 }
-                return action.data;
+                return action.data; // Fallback, though should have context
             }
         }
         return null;
@@ -545,7 +561,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
     const handleContainerMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         if (tool === 'eraser' && !isDrawing) {
-            const coords = getCoordinates(event);
+            const coords = getCoordinates(event); // coords are logical
             setMouseCanvasPosition(coords);
         }
     }, [tool, isDrawing, getCoordinates]);
@@ -556,17 +572,28 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         }
     }, [tool, isDrawing]);
     
-    const handleContainerMouseLeave = useCallback(() => {
+    const handleContainerMouseLeave = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         if (tool === 'eraser' && !isDrawing) {
             setIsMouseOnCanvas(false);
-            setMouseCanvasPosition(null); // Explicitly nullify to ensure preview is cleared
+            setMouseCanvasPosition(null); 
+            requestAnimationFrame(redrawCanvas); // Ensure preview is cleared
         }
-        // Also call mouse up if drawing was in progress (for shapes/freehand)
-        if (isDrawing && (tool !== 'text' && tool !== 'eraser')) {
-             const mockEvent = event as unknown as React.MouseEvent<HTMLCanvasElement>; // Cast, might be risky
-            handleMouseUpTouchEnd(mockEvent);
+        if (isDrawing && (tool !== 'text' && tool !== 'eraser')) { 
+            // If drawing a shape and mouse leaves canvas, treat as mouseup
+            // Need to simulate a mouseup event or call the handler directly
+            // For simplicity, just call handleMouseUpTouchEnd
+            // We might need to check if event is a React.MouseEvent<HTMLCanvasElement>
+             if (canvasRef.current && event.target === canvasRef.current) {
+                 handleMouseUpTouchEnd(event as unknown as React.MouseEvent<HTMLCanvasElement>);
+             } else {
+                // If mouse leaves container but not canvas, might not need to stop drawing.
+                // However, for robust behavior, if it leaves the main container, ending drawing is safer.
+                // This part can be tricky; a simple approach is to end if drawing.
+                // const mockEvent = { nativeEvent: event.nativeEvent } as React.MouseEvent<HTMLCanvasElement>;
+                // handleMouseUpTouchEnd(mockEvent); 
+             }
         }
-    }, [tool, isDrawing, handleMouseUpTouchEnd]);
+    }, [tool, isDrawing, handleMouseUpTouchEnd, redrawCanvas]);
 
 
     return (
@@ -595,4 +622,3 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
 CanvasRenderer.displayName = 'CanvasRenderer';
 export default CanvasRenderer;
-

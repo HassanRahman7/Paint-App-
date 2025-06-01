@@ -33,7 +33,7 @@ export default function CanvasCraftPage() {
 
   const [isTextInputVisible, setIsTextInputVisible] = useState<boolean>(false);
   const [textInputValue, setTextInputValue] = useState<string>('');
-  const [textInputCoords, setTextInputCoords] = useState<{ x: number; y: number } | null>(null); // Canvas coords
+  const [textInputCoords, setTextInputCoords] = useState<{ x: number; y: number } | null>(null); // Canvas logical coords
   const [currentEditingTextId, setCurrentEditingTextId] = useState<string | null>(null);
 
   const canvasComponentRef = useRef<CanvasRendererHandle>(null);
@@ -52,9 +52,18 @@ export default function CanvasCraftPage() {
 
   const handleUndo = useCallback(() => {
     canvasComponentRef.current?.undo();
-    const potentiallyDeselectedId = currentEditingTextId;
+    // If an undo deselects text or removes the currently edited one, hide input
+    const potentiallyDeselectedId = currentEditingTextId; 
     setCurrentEditingTextId(null); 
     setIsTextInputVisible(false);
+    // Check if the element still exists after undo
+    if (potentiallyDeselectedId) {
+        canvasComponentRef.current?.getTextElementById(potentiallyDeselectedId).then(el => {
+            if(!el) {
+                // Element was removed by undo
+            }
+        });
+    }
   }, [currentEditingTextId]);
 
   const handleRedo = useCallback(() => {
@@ -81,8 +90,9 @@ export default function CanvasCraftPage() {
       setIsTextItalic(element.isItalic);
       setIsTextUnderline(element.isUnderline);
       setCurrentEditingTextId(textId);
-      setIsTextInputVisible(true);
+      // Position input based on element's logical coords
       setTextInputCoords({x: element.x, y: element.y}); 
+      setIsTextInputVisible(true);
     }
   }, []);
 
@@ -94,23 +104,21 @@ export default function CanvasCraftPage() {
       return;
     }
 
-    const canvas = canvasComponentRef.current.getCanvasElement();
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const dpr = window.devicePixelRatio || 1;
-    const canvasX = x * dpr;
-    const canvasY = y * dpr;
+    const canvasEl = canvasComponentRef.current.getCanvasElement();
+    if (!canvasEl) return;
+    const rect = canvasEl.getBoundingClientRect();
+    // Get logical coordinates relative to the canvas
+    const logicalX = event.clientX - rect.left;
+    const logicalY = event.clientY - rect.top;
 
-    const clickedTextId = await canvasComponentRef.current?.getTextElementIdAtPoint({ x: canvasX, y: canvasY });
+    const clickedTextId = await canvasComponentRef.current?.getTextElementIdAtPoint({ x: logicalX, y: logicalY });
 
     if (clickedTextId) {
       await loadTextElementForEditing(clickedTextId);
     } else {
       setCurrentEditingTextId(null);
       setTextInputValue(''); 
-      setTextInputCoords({ x: canvasX, y: canvasY });
+      setTextInputCoords({ x: logicalX, y: logicalY }); // Store logical coords for new text
       setIsTextInputVisible(true);
     }
   }, [selectedTool, loadTextElementForEditing]);
@@ -125,8 +133,8 @@ export default function CanvasCraftPage() {
 
     const textData: Omit<TextElementData, 'id' | 'measuredWidth' | 'measuredHeight'> = {
       text: textInputValue,
-      x: textInputCoords.x,
-      y: textInputCoords.y,
+      x: textInputCoords.x, // Use stored logical coords
+      y: textInputCoords.y, // Use stored logical coords
       fontFamily,
       fontSize,
       textColor,
@@ -153,12 +161,14 @@ export default function CanvasCraftPage() {
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId]);
 
   useEffect(() => {
+    // This effect updates formatting of an existing, selected text element
+    // when formatting controls are changed AND the text input is NOT visible (meaning editing is via controls, not typing)
     if (currentEditingTextId && !isTextInputVisible) { 
       const updateFormatting = async () => {
         const currentElement = await canvasComponentRef.current?.getTextElementById(currentEditingTextId);
         if (currentElement) {
           const updatedData: TextElementData = {
-            ...currentElement,
+            ...currentElement, // Keep existing text and position
             fontFamily,
             fontSize,
             textColor,
@@ -191,6 +201,7 @@ export default function CanvasCraftPage() {
           event.preventDefault();
           setIsTextInputVisible(false);
           setTextInputValue('');
+          setCurrentEditingTextId(null); // Deselect text on escape
         }
       }
     };
@@ -201,7 +212,25 @@ export default function CanvasCraftPage() {
 
   const commonInputClass = "w-10 h-10 p-0 bg-transparent border border-input rounded-md cursor-pointer appearance-none [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-none";
   const isShapeTool = ['rectangle', 'circle', 'triangle'].includes(selectedTool);
-  const isLineOrFreehand = ['line', 'freehand'].includes(selectedTool);
+  
+  const getTextInputStyle = () => {
+    if (!isTextInputVisible || !textInputCoords || !canvasComponentRef.current) return { display: 'none' };
+    const canvasEl = canvasComponentRef.current.getCanvasElement();
+    if (!canvasEl) return { display: 'none' };
+
+    const canvasRect = canvasEl.getBoundingClientRect();
+    // textInputCoords are logical canvas coordinates. Add canvas offset to get screen coordinates.
+    const screenX = textInputCoords.x + canvasRect.left;
+    const screenY = textInputCoords.y + canvasRect.top;
+    
+    return {
+      left: `${Math.min(window.innerWidth - 200, Math.max(10, screenX))}px`,
+      top: `${Math.min(window.innerHeight - 50, Math.max(10, screenY))}px`,
+      minWidth: '150px',
+      maxWidth: '300px',
+    };
+  };
+
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-body">
@@ -254,9 +283,17 @@ export default function CanvasCraftPage() {
                     </>
                   )}
                   
-                  <div className="flex items-center gap-2" title={`${selectedTool === 'eraser' ? 'Eraser Size' : 'Stroke Width'}: ${strokeWidth}px`}>
+                  <div className="flex items-center gap-2" title={`${selectedTool === 'eraser' ? 'Eraser Size' : 'Brush/Eraser Size'}: ${strokeWidth}px`}>
                     <Paintbrush className="h-6 w-6 text-primary" />
-                    <Slider min={1} max={selectedTool === 'eraser' ? 100 : 50} step={1} value={[strokeWidth]} onValueChange={(val) => setStrokeWidth(val[0])} className="w-full min-w-[100px] sm:min-w-[150px]" aria-label={`${selectedTool === 'eraser' ? 'Eraser size' : 'Stroke width'}: ${strokeWidth}px`}/>
+                    <Slider 
+                        min={1} 
+                        max={selectedTool === 'eraser' ? 100 : 50} 
+                        step={1} 
+                        value={[strokeWidth]} 
+                        onValueChange={(val) => setStrokeWidth(val[0])} 
+                        className="w-full min-w-[100px] sm:min-w-[150px]" 
+                        aria-label={`${selectedTool === 'eraser' ? 'Eraser size' : 'Brush/Eraser Size'}: ${strokeWidth}px`}
+                    />
                     <span className="text-sm w-8 text-center select-none">{strokeWidth}</span>
                   </div>
                 </>
@@ -336,13 +373,13 @@ export default function CanvasCraftPage() {
       <main className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-0 p-0 overflow-hidden relative">
         <div 
           className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
-          onClick={selectedTool === 'text' ? handleCanvasInteraction : undefined}
+          onClick={selectedTool === 'text' ? handleCanvasInteraction : undefined} // Only use custom click for text tool
         >
            <CanvasRenderer
             ref={canvasComponentRef}
             tool={selectedTool}
             strokeColor={strokeColor}
-            strokeWidth={strokeWidth} // Used for brush, shapes, and eraser size
+            strokeWidth={strokeWidth} 
             fillColor={fillColor}
             isFillEnabled={isFillEnabled}
             currentEditingTextId={currentEditingTextId}
@@ -355,7 +392,7 @@ export default function CanvasCraftPage() {
                 }
             }}
              onTextSelect={(id) => { 
-                setSelectedTool('text'); 
+                setSelectedTool('text'); // Switch to text tool if not already
                 loadTextElementForEditing(id);
              }}
           />
@@ -366,14 +403,9 @@ export default function CanvasCraftPage() {
             type="text"
             value={textInputValue}
             onChange={(e) => setTextInputValue(e.target.value)}
-            onBlur={handleTextInputCommit}
+            onBlur={handleTextInputCommit} // Commit on blur
             className="absolute z-10 bg-background border border-primary shadow-lg p-2 rounded-md text-sm"
-            style={{
-              left: `${Math.min(window.innerWidth - 200, Math.max(10, (textInputCoords.x / (window.devicePixelRatio || 1)) + (canvasComponentRef.current?.getCanvasElement()?.getBoundingClientRect().left || 0) ))}px`,
-              top: `${Math.min(window.innerHeight - 50, Math.max(10, (textInputCoords.y / (window.devicePixelRatio || 1)) + (canvasComponentRef.current?.getCanvasElement()?.getBoundingClientRect().top || 0) ))}px`,
-              minWidth: '150px',
-              maxWidth: '300px',
-            }}
+            style={getTextInputStyle()}
             placeholder="Type text here..."
           />
         )}
@@ -381,4 +413,3 @@ export default function CanvasCraftPage() {
     </div>
   );
 }
-
