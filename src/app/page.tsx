@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import type { CanvasSheet, DrawingAction, DrawingTool, TextElementData, ImageActionData, Point, ShapeAction, TextAction } from '@/lib/types';
+import type { CanvasSheet, DrawingAction, DrawingTool, TextElementData, ImageActionData, Point, ShapeAction, TextAction, ShapeAction } from '@/lib/types';
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,8 +54,8 @@ const createNewSheet = (name?: string, existingHistory?: DrawingAction[], existi
 
 
 export default function CanvasCraftPage() {
-  const [sheets, setSheets] = useState<CanvasSheet[]>(() => [createNewSheet(DEFAULT_SHEET_NAME + " 1")]);
-  const [activeSheetId, setActiveSheetId] = useState<string>(sheets[0].id);
+  const [sheets, setSheets] = useState<CanvasSheet[]>([]);
+  const [activeSheetId, setActiveSheetId] = useState<string | null>(null);
 
   const [strokeColor, setStrokeColor] = useState<string>('#000000');
   const [fillColor, setFillColor] = useState<string>('#79B4B7');
@@ -90,7 +90,17 @@ export default function CanvasCraftPage() {
   const imagePreviewDivRef = useRef<HTMLDivElement>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  const activeSheet = sheets.find(s => s.id === activeSheetId) || sheets[0];
+  useEffect(() => {
+    // Initialize the first sheet on client-side mount
+    if (sheets.length === 0) {
+      const initialSheet = createNewSheet(DEFAULT_SHEET_NAME + " 1");
+      setSheets([initialSheet]);
+      setActiveSheetId(initialSheet.id);
+    }
+  }, [sheets.length]); // Only run when sheets.length changes from 0
+
+
+  const activeSheet = activeSheetId ? sheets.find(s => s.id === activeSheetId) : null;
 
   const updateSheetHistory = (sheetId: string, newHistory: DrawingAction[], newIndex: number) => {
     setSheets(prevSheets => prevSheets.map(s =>
@@ -99,6 +109,8 @@ export default function CanvasCraftPage() {
   };
 
   const handleCommitAction = useCallback((actionData: Omit<DrawingAction, 'id' | 'visible'>) => {
+    if (!activeSheetId || !activeSheet) return;
+
     const newActionId = actionData.type === 'text' && (actionData.data as TextElementData).id ? (actionData.data as TextElementData).id
                        : actionData.type === 'image' && (actionData.data as ImageActionData).id ? (actionData.data as ImageActionData).id
                        : (selectedShapeId && (actionData.type === 'rectangle' || actionData.type === 'circle' || actionData.type === 'triangle')) ? selectedShapeId // reuse ID for shape updates
@@ -122,10 +134,11 @@ export default function CanvasCraftPage() {
         setSelectedShapeId(null);
     }
 
-  }, [activeSheet.drawingHistory, activeSheet.historyIndex, activeSheetId, currentEditingTextId, selectedShapeId]);
+  }, [activeSheet, activeSheetId, currentEditingTextId, selectedShapeId]);
 
 
   const handleClearCanvas = useCallback(() => {
+    if (!activeSheetId) return;
     updateSheetHistory(activeSheetId, [], -1);
     setCurrentEditingTextId(null);
     setSelectedShapeId(null);
@@ -134,25 +147,24 @@ export default function CanvasCraftPage() {
   }, [activeSheetId]);
 
   const handleDownloadDrawing = useCallback(() => {
+    if (!activeSheet) return;
     canvasComponentRef.current?.downloadDrawing(`${activeSheet.name.replace(/\s+/g, '_') || 'canvas-craft'}.png`);
-  }, [activeSheet.name]);
+  }, [activeSheet]);
 
   const handleUndo = useCallback(() => {
-    if (activeSheet.historyIndex >= 0) {
-      updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex - 1);
-      setCurrentEditingTextId(null);
-      setSelectedShapeId(null);
-      setIsTextInputVisible(false);
-    }
+    if (!activeSheet || !activeSheetId || activeSheet.historyIndex < 0) return;
+    updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex - 1);
+    setCurrentEditingTextId(null);
+    setSelectedShapeId(null);
+    setIsTextInputVisible(false);
   }, [activeSheet, activeSheetId]);
 
   const handleRedo = useCallback(() => {
-    if (activeSheet.historyIndex < activeSheet.drawingHistory.length - 1) {
-      updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex + 1);
-      setCurrentEditingTextId(null);
-      setSelectedShapeId(null);
-      setIsTextInputVisible(false);
-    }
+    if (!activeSheet || !activeSheetId || activeSheet.historyIndex >= activeSheet.drawingHistory.length - 1) return;
+    updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex + 1);
+    setCurrentEditingTextId(null);
+    setSelectedShapeId(null);
+    setIsTextInputVisible(false);
   }, [activeSheet, activeSheetId]);
 
 
@@ -163,6 +175,7 @@ export default function CanvasCraftPage() {
   }, [isTextInputVisible]);
 
   const loadTextElementForEditing = useCallback(async (textId: string) => {
+    if (!activeSheet) return;
     const action = activeSheet.drawingHistory
         .slice(0, activeSheet.historyIndex + 1)
         .reverse()
@@ -183,13 +196,13 @@ export default function CanvasCraftPage() {
       setTextInputCoords({x: element.x, y: element.y});
       setIsTextInputVisible(true);
     }
-  }, [activeSheet.drawingHistory, activeSheet.historyIndex]);
+  }, [activeSheet]);
 
   const handleCanvasInteraction = useCallback(async (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!activeSheet) return;
     if (selectedTool === 'image' && pendingImage) return;
     if (selectedTool !== 'text' || !canvasComponentRef.current) {
       setIsTextInputVisible(false);
-      // setCurrentEditingTextId(null); // Don't deselect text if clicking outside while text tool is active
       return;
     }
 
@@ -204,14 +217,13 @@ export default function CanvasCraftPage() {
     if (clickedTextId) {
       await loadTextElementForEditing(clickedTextId);
     } else {
-      // If not clicking on existing text, place new text input
-      setCurrentEditingTextId(null); // Deselect any currently editing text
-      setSelectedShapeId(null); // Deselect any shape
-      setTextInputValue(''); // Clear input for new text
+      setCurrentEditingTextId(null); 
+      setSelectedShapeId(null); 
+      setTextInputValue(''); 
       setTextInputCoords({ x: logicalX, y: logicalY });
       setIsTextInputVisible(true);
     }
-  }, [selectedTool, loadTextElementForEditing, pendingImage]);
+  }, [selectedTool, loadTextElementForEditing, pendingImage, activeSheet]);
 
 
   const handleTextInputCommit = useCallback(() => {
@@ -236,15 +248,13 @@ export default function CanvasCraftPage() {
 
     setIsTextInputVisible(false);
     setTextInputValue('');
-    // currentEditingTextId is cleared in handleCommitAction if it wasn't this text item
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId, handleCommitAction]);
 
-  // Update existing text element formatting when not in input mode OR selected shape properties
   useEffect(() => {
+    if (!activeSheet) return;
     const isTextToolActive = selectedTool === 'text';
     
     if (currentEditingTextId && isTextToolActive && !isTextInputVisible) {
-        // Find the latest action for the currentEditingTextId
         const latestAction = activeSheet.drawingHistory
             .slice(0, activeSheet.historyIndex + 1)
             .reverse()
@@ -259,14 +269,12 @@ export default function CanvasCraftPage() {
             handleCommitAction({ type: 'text', data: updatedTextData });
         }
     } else if (selectedShapeId && !isTextToolActive) {
-        // Find the latest action for the selectedShapeId
         const latestAction = activeSheet.drawingHistory
             .slice(0, activeSheet.historyIndex + 1)
             .reverse()
             .find(a => a.id === selectedShapeId && (a.type === 'rectangle' || a.type === 'circle' || a.type === 'triangle')) as ShapeAction | undefined;
 
         if (latestAction) {
-            // Check if any relevant property has changed
             if (latestAction.fillColor !== fillColor ||
                 latestAction.strokeColor !== strokeColor ||
                 latestAction.strokeWidth !== strokeWidth ||
@@ -286,10 +294,10 @@ export default function CanvasCraftPage() {
         }
     }
   }, [
-    fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, // Text props
-    fillColor, strokeColor, strokeWidth, isFillEnabled, // Shape props
+    fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, 
+    fillColor, strokeColor, strokeWidth, isFillEnabled, 
     currentEditingTextId, selectedShapeId, isTextInputVisible, selectedTool,
-    activeSheet.drawingHistory, activeSheet.historyIndex, handleCommitAction
+    activeSheet, handleCommitAction
   ]);
 
 
@@ -388,11 +396,11 @@ export default function CanvasCraftPage() {
       if (isTextInputVisible) {
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleTextInputCommit(); }
         else if (event.key === 'Escape') {
-          event.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); // Keep currentEditingTextId for style updates
+          event.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); 
         }
       } else if (selectedTool === 'image' && pendingImage && event.key === 'Escape') {
           event.preventDefault(); handleCancelImage();
-      } else if (!isInputFocused && event.key === 'Escape') { // Deselect shape/text on Escape
+      } else if (!isInputFocused && event.key === 'Escape') { 
           setCurrentEditingTextId(null);
           setSelectedShapeId(null);
       }
@@ -409,12 +417,6 @@ export default function CanvasCraftPage() {
     const canvasEl = canvasComponentRef.current.getCanvasElement();
     if (!canvasEl) return { display: 'none' };
     const canvasRect = canvasEl.getBoundingClientRect();
-
-    // Ensure textInputCoords are scaled if canvas is scaled internally for DPR
-    // However, canvasComponentRef.current.getCanvasElement() gives the element itself,
-    // its rect.left/top are already screen coordinates.
-    // And textInputCoords should be logical canvas coordinates.
-
     const screenX = textInputCoords.x + canvasRect.left;
     const screenY = textInputCoords.y + canvasRect.top;
     return {
@@ -435,7 +437,6 @@ export default function CanvasCraftPage() {
                 const img = new Image();
                 img.onload = () => {
                     const canvasEl = canvasComponentRef.current!.getCanvasElement()!;
-                    // Use logical canvas dimensions for pending image placement
                     const logicalCanvasWidth = canvasEl.width / (window.devicePixelRatio || 1);
                     const logicalCanvasHeight = canvasEl.height / (window.devicePixelRatio || 1);
 
@@ -451,8 +452,8 @@ export default function CanvasCraftPage() {
                         currentX: (logicalCanvasWidth - initialWidth) / 2, currentY: (logicalCanvasHeight - initialHeight) / 2,
                         currentWidth: initialWidth, currentHeight: initialHeight,
                     });
-                    setSelectedShapeId(null); // Deselect shape when new image is loaded
-                    setCurrentEditingTextId(null); // Deselect text
+                    setSelectedShapeId(null); 
+                    setCurrentEditingTextId(null); 
                 };
                 img.src = src;
             }
@@ -462,7 +463,6 @@ export default function CanvasCraftPage() {
     if (event.target) event.target.value = "";
   };
 
-  // Sheet Management Callbacks
   const handleAddSheet = () => {
     const newSheet = createNewSheet();
     setSheets(prev => [...prev, newSheet]);
@@ -491,14 +491,20 @@ export default function CanvasCraftPage() {
     }
   };
   const handleDeleteSheet = (sheetId: string) => {
-    if (sheets.length <= 1) return;
+    if (sheets.length <= 1) return; // Cannot delete the last sheet
+    const sheetIndexToDelete = sheets.findIndex(s => s.id === sheetId);
+    if (sheetIndexToDelete === -1) return;
+
     setSheets(prev => prev.filter(s => s.id !== sheetId));
     if (activeSheetId === sheetId) {
-      setActiveSheetId(sheets.find(s => s.id !== sheetId)?.id || sheets[0].id);
+        // Determine new active sheet: one before, or first, or null if all deleted (though we prevent last delete)
+        const newActiveSheet = sheets[sheetIndexToDelete -1] || sheets[0];
+        setActiveSheetId(newActiveSheet ? newActiveSheet.id : (sheets.length > 1 ? sheets.find(s => s.id !== sheetId)!.id : null));
     }
   };
 
   const handleToggleHistoryVisibility = (actionId: string) => {
+    if (!activeSheetId || !activeSheet) return;
     const newHistory = activeSheet.drawingHistory.map(action =>
       action.id === actionId ? { ...action, visible: !(action.visible !== false) } : action
     );
@@ -506,10 +512,11 @@ export default function CanvasCraftPage() {
   };
 
   const handleDeleteHistoryItem = (actionId: string) => {
-    handleToggleHistoryVisibility(actionId); // Soft delete for now
+    handleToggleHistoryVisibility(actionId); 
   };
 
   const handleSelectHistoryItemForEditing = (actionId: string, type: DrawingAction['type']) => {
+    if (!activeSheet) return;
     if (type === 'text') {
       setSelectedTool('text');
       loadTextElementForEditing(actionId);
@@ -517,7 +524,7 @@ export default function CanvasCraftPage() {
         const latestAction = activeSheet.drawingHistory
             .slice(0, activeSheet.historyIndex + 1)
             .reverse()
-            .find(a => a.id === actionId && (a.type === 'rectangle' || a.type === 'circle' || a.type === 'triangle')) as ShapeAction | undefined;
+            .find(a => a.id === actionId && (a.type === 'rectangle' || a.type === 'circle' || a.type === 'triangle') && a.visible !== false) as ShapeAction | undefined;
         if (latestAction) {
             setSelectedShapeId(actionId);
             setFillColor(latestAction.fillColor || '#79B4B7');
@@ -526,23 +533,34 @@ export default function CanvasCraftPage() {
             setIsFillEnabled(latestAction.isFilled !== undefined ? latestAction.isFilled : true);
             setCurrentEditingTextId(null);
             setIsTextInputVisible(false);
+            setSelectedTool(latestAction.type);
         }
     }
   };
   
   const handleShapeSelect = (id: string, data: ShapeAction) => {
     setSelectedShapeId(id);
-    setFillColor(data.fillColor || '#79B4B7'); // Default if undefined
+    setFillColor(data.fillColor || '#79B4B7'); 
     setStrokeColor(data.strokeColor);
     setStrokeWidth(data.strokeWidth);
-    setIsFillEnabled(data.isFilled !== undefined ? data.isFilled : true); // Default if undefined
-    setCurrentEditingTextId(null); // Deselect text
+    setIsFillEnabled(data.isFilled !== undefined ? data.isFilled : true); 
+    setCurrentEditingTextId(null); 
     setIsTextInputVisible(false);
-    setSelectedTool(data.type); // Optionally switch tool to the selected shape's type
+    setSelectedTool(data.type); 
   };
 
 
   const currentTextFormatting = { fontFamily, fontSize, textColor, textAlign, isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline };
+
+  if (!activeSheetId || !activeSheet) {
+    // Render a loading state or minimal UI until the first sheet is initialized
+    return (
+        <div className="flex h-screen w-screen items-center justify-center bg-background text-foreground">
+            <p>Loading CanvasCraft...</p>
+            {/* Optionally, a spinner component here */}
+        </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-background text-foreground font-body">
@@ -573,11 +591,12 @@ export default function CanvasCraftPage() {
                   <Brush className="h-6 w-6 text-primary" />
                   <Select value={selectedTool} onValueChange={(value) => {
                     setSelectedTool(value as DrawingTool);
-                    setIsTextInputVisible(false); // Hide text input when switching tools
-                    // setCurrentEditingTextId(null); // Keep text selected for styling if text tool is re-selected
-                    // setSelectedShapeId(null); // Keep shape selected for styling
+                    setIsTextInputVisible(false); 
                     if (value === 'image' && !pendingImage) { fileInputRef.current?.click(); }
                     else if (value !== 'image' && pendingImage) { handleCancelImage(); }
+                    // Deselect shape/text if switching to a non-editing tool or different category
+                    if (value !== 'text') setCurrentEditingTextId(null);
+                    if (value !== 'rectangle' && value !== 'circle' && value !== 'triangle') setSelectedShapeId(null);
                   }}>
                     <SelectTrigger className="w-full sm:w-[180px]" aria-label="Select tool">
                       <SelectValue placeholder="Select tool" />
@@ -623,18 +642,18 @@ export default function CanvasCraftPage() {
                   </>
                 )}
                 <div className="flex items-center gap-2 sm:gap-3 md:col-start-2 lg:col-start-3 xl:col-start-auto">
-                  <Button variant="outline" onClick={handleUndo} aria-label="Undo (Ctrl+Z)" title="Undo (Ctrl+Z)" disabled={activeSheet.historyIndex < 0}>
+                  <Button variant="outline" onClick={handleUndo} aria-label="Undo (Ctrl+Z)" title="Undo (Ctrl+Z)" disabled={!activeSheet || activeSheet.historyIndex < 0}>
                     <Undo2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Undo</span>
                   </Button>
-                  <Button variant="outline" onClick={handleRedo} aria-label="Redo (Ctrl+Y)" title="Redo (Ctrl+Y)" disabled={activeSheet.historyIndex >= activeSheet.drawingHistory.length -1}>
+                  <Button variant="outline" onClick={handleRedo} aria-label="Redo (Ctrl+Y)" title="Redo (Ctrl+Y)" disabled={!activeSheet || activeSheet.historyIndex >= activeSheet.drawingHistory.length -1}>
                     <Redo2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Redo</span>
                   </Button>
                 </div>
                 <div className="flex items-center gap-2 sm:gap-3">
-                  <Button variant="outline" onClick={handleClearCanvas} aria-label="Clear Canvas (Ctrl+Backspace)" title="Clear Canvas (Ctrl+Backspace)">
+                  <Button variant="outline" onClick={handleClearCanvas} aria-label="Clear Canvas (Ctrl+Backspace)" title="Clear Canvas (Ctrl+Backspace)" disabled={!activeSheet}>
                     <Trash2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Clear</span>
                   </Button>
-                  <Button onClick={handleDownloadDrawing} aria-label="Download (Ctrl+S)" title="Download Drawing (Ctrl+S)">
+                  <Button onClick={handleDownloadDrawing} aria-label="Download (Ctrl+S)" title="Download Drawing (Ctrl+S)" disabled={!activeSheet}>
                     <Download className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Download</span>
                   </Button>
                 </div>
@@ -746,10 +765,10 @@ export default function CanvasCraftPage() {
             onClick={ (selectedTool === 'text' && !pendingImage && !selectedShapeId) ? handleCanvasInteraction : undefined}
           >
              <CanvasRenderer
-              key={activeSheetId} 
+              key={activeSheetId || 'loading-canvas'} 
               ref={canvasComponentRef}
-              drawingHistory={activeSheet.drawingHistory}
-              historyIndex={activeSheet.historyIndex}
+              drawingHistory={activeSheet ? activeSheet.drawingHistory : []}
+              historyIndex={activeSheet ? activeSheet.historyIndex : -1}
               tool={selectedTool}
               strokeColor={strokeColor}
               strokeWidth={strokeWidth}
@@ -808,7 +827,7 @@ export default function CanvasCraftPage() {
             <Input
               ref={textInputRef} type="text" value={textInputValue}
               onChange={(e) => setTextInputValue(e.target.value)}
-              onBlur={handleTextInputCommit} // Committing on blur might be too aggressive, consider explicit save button
+              onBlur={handleTextInputCommit} 
               onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextInputCommit(); }
                   if (e.key === 'Escape') { e.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); }
@@ -822,7 +841,7 @@ export default function CanvasCraftPage() {
       </div>
         <div className="hidden md:block w-[300px] lg:w-[350px] border-l shrink-0">
              <HistorySidebar
-                history={activeSheet.drawingHistory.slice(0, activeSheet.historyIndex + 1)}
+                history={activeSheet ? activeSheet.drawingHistory.slice(0, activeSheet.historyIndex + 1) : []}
                 onToggleVisibility={handleToggleHistoryVisibility}
                 onDeleteItem={handleDeleteHistoryItem}
                 onSelectItemForEditing={handleSelectHistoryItemForEditing}
@@ -832,3 +851,5 @@ export default function CanvasCraftPage() {
     </div>
   );
 }
+
+    
