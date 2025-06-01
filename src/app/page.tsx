@@ -9,7 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon } from 'lucide-react';
+import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Eraser } from 'lucide-react';
 import CanvasRenderer, { type CanvasRendererHandle, type DrawingTool, type TextElementData } from '@/components/canvas-renderer';
 import { cn } from '@/lib/utils';
 
@@ -18,7 +18,7 @@ const FONT_FAMILIES = ['Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courie
 export default function CanvasCraftPage() {
   const [strokeColor, setStrokeColor] = useState<string>('#000000');
   const [fillColor, setFillColor] = useState<string>('#79B4B7');
-  const [strokeWidth, setStrokeWidth] = useState<number>(5);
+  const [strokeWidth, setStrokeWidth] = useState<number>(5); // Also eraser size
   const [selectedTool, setSelectedTool] = useState<DrawingTool>('freehand');
   const [isFillEnabled, setIsFillEnabled] = useState<boolean>(true);
 
@@ -52,11 +52,9 @@ export default function CanvasCraftPage() {
 
   const handleUndo = useCallback(() => {
     canvasComponentRef.current?.undo();
-    // If an undo operation might deselect text or remove it, clear editing state
     const potentiallyDeselectedId = currentEditingTextId;
     setCurrentEditingTextId(null); 
     setIsTextInputVisible(false);
-    // Potentially re-fetch selected text properties if undo modified it (more complex)
   }, [currentEditingTextId]);
 
   const handleRedo = useCallback(() => {
@@ -84,17 +82,14 @@ export default function CanvasCraftPage() {
       setIsTextUnderline(element.isUnderline);
       setCurrentEditingTextId(textId);
       setIsTextInputVisible(true);
-      // Position input near the text element. This needs screen coords.
-      // For simplicity, we'll place it at a fixed spot or not move it now.
-      // textInputRef.current can be positioned if we calculate screen coords.
-      setTextInputCoords({x: element.x, y: element.y}); // Store canvas coords
+      setTextInputCoords({x: element.x, y: element.y}); 
     }
   }, []);
 
 
   const handleCanvasInteraction = useCallback(async (event: React.MouseEvent<HTMLDivElement>) => {
     if (selectedTool !== 'text' || !canvasComponentRef.current) {
-      setIsTextInputVisible(false); // Hide text input if not in text mode
+      setIsTextInputVisible(false); 
       setCurrentEditingTextId(null);
       return;
     }
@@ -112,11 +107,9 @@ export default function CanvasCraftPage() {
 
     if (clickedTextId) {
       await loadTextElementForEditing(clickedTextId);
-      // Dragging will be initiated by CanvasRenderer directly
     } else {
-      // Place new text
       setCurrentEditingTextId(null);
-      setTextInputValue(''); // Reset for new text
+      setTextInputValue(''); 
       setTextInputCoords({ x: canvasX, y: canvasY });
       setIsTextInputVisible(true);
     }
@@ -147,24 +140,20 @@ export default function CanvasCraftPage() {
       canvasComponentRef.current?.updateTextElement(currentEditingTextId, {
         ...textData,
         id: currentEditingTextId,
-        // measuredWidth/Height will be recalculated by CanvasRenderer
       } as TextElementData);
     } else {
       canvasComponentRef.current?.addTextElement({
         ...textData,
         id: `text-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-         // measuredWidth/Height will be recalculated by CanvasRenderer
       } as TextElementData);
     }
 
     setIsTextInputVisible(false);
     setTextInputValue('');
-    // setCurrentEditingTextId(null); // Keep selected if just content changed
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId]);
 
-  // Effect to update text element when formatting changes for a selected text
   useEffect(() => {
-    if (currentEditingTextId && !isTextInputVisible) { // Apply if not in text input mode (i.e. format change after selection)
+    if (currentEditingTextId && !isTextInputVisible) { 
       const updateFormatting = async () => {
         const currentElement = await canvasComponentRef.current?.getTextElementById(currentEditingTextId);
         if (currentElement) {
@@ -202,7 +191,6 @@ export default function CanvasCraftPage() {
           event.preventDefault();
           setIsTextInputVisible(false);
           setTextInputValue('');
-         // setCurrentEditingTextId(null); Keep selected to allow formatting
         }
       }
     };
@@ -212,7 +200,9 @@ export default function CanvasCraftPage() {
   }, [handleClearCanvas, handleDownloadDrawing, handleUndo, handleRedo, isTextInputVisible, handleTextInputCommit]);
 
   const commonInputClass = "w-10 h-10 p-0 bg-transparent border border-input rounded-md cursor-pointer appearance-none [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-none";
-  
+  const isShapeTool = ['rectangle', 'circle', 'triangle'].includes(selectedTool);
+  const isLineOrFreehand = ['line', 'freehand'].includes(selectedTool);
+
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-body">
       <header className="p-2 sm:p-4">
@@ -220,11 +210,11 @@ export default function CanvasCraftPage() {
           <CardContent className="p-3 sm:p-4">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 items-center">
               
-              <div className="flex items-center gap-2" title="Drawing/Text Tool">
+              <div className="flex items-center gap-2" title="Drawing/Text/Eraser Tool">
                 <Brush className="h-6 w-6 text-primary" />
                 <Select value={selectedTool} onValueChange={(value) => {
                   setSelectedTool(value as DrawingTool);
-                  setIsTextInputVisible(false); // Hide text input when changing tool
+                  setIsTextInputVisible(false); 
                   setCurrentEditingTextId(null);
                 }}>
                   <SelectTrigger className="w-full sm:w-[180px]" aria-label="Select tool">
@@ -237,31 +227,37 @@ export default function CanvasCraftPage() {
                     <SelectItem value="circle"><div className="flex items-center gap-2"><CircleIcon className="h-4 w-4" /> Circle</div></SelectItem>
                     <SelectItem value="triangle"><div className="flex items-center gap-2"><TriangleIcon className="h-4 w-4" /> Triangle</div></SelectItem>
                     <SelectItem value="text"><div className="flex items-center gap-2"><Type className="h-4 w-4" /> Text</div></SelectItem>
+                    <SelectItem value="eraser"><div className="flex items-center gap-2"><Eraser className="h-4 w-4" /> Eraser</div></SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               
               {selectedTool !== 'text' && (
                 <>
-                  <div className="flex items-center gap-2" title="Stroke Color">
-                    <Palette className="h-6 w-6 text-primary" />
-                    <input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} className={commonInputClass} aria-label="Select stroke color"/>
-                  </div>
+                  {selectedTool !== 'eraser' && (
+                    <div className="flex items-center gap-2" title="Stroke Color">
+                      <Palette className="h-6 w-6 text-primary" />
+                      <input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} className={commonInputClass} aria-label="Select stroke color"/>
+                    </div>
+                  )}
 
-                  <div className="flex items-center gap-2" title="Fill Color">
-                    <PaintBucket className="h-6 w-6 text-primary" />
-                    <input type="color" value={fillColor} onChange={(e) => setFillColor(e.target.value)} className={commonInputClass} aria-label="Select fill color" disabled={selectedTool === 'freehand' || selectedTool === 'line'}/>
-                  </div>
+                  {isShapeTool && (
+                    <>
+                    <div className="flex items-center gap-2" title="Fill Color">
+                      <PaintBucket className="h-6 w-6 text-primary" />
+                      <input type="color" value={fillColor} onChange={(e) => setFillColor(e.target.value)} className={commonInputClass} aria-label="Select fill color"/>
+                    </div>
+                     <div className="flex items-center gap-2" title="Fill Shape">
+                        <Checkbox id="fillShape" checked={isFillEnabled} onCheckedChange={(checked) => setIsFillEnabled(checked as boolean)} aria-label="Toggle fill for shapes"/>
+                        <Label htmlFor="fillShape">Fill Shape</Label>
+                      </div>
+                    </>
+                  )}
                   
-                  <div className="flex items-center gap-2" title={`Stroke Width: ${strokeWidth}px`}>
+                  <div className="flex items-center gap-2" title={`${selectedTool === 'eraser' ? 'Eraser Size' : 'Stroke Width'}: ${strokeWidth}px`}>
                     <Paintbrush className="h-6 w-6 text-primary" />
-                    <Slider min={1} max={50} step={1} value={[strokeWidth]} onValueChange={(val) => setStrokeWidth(val[0])} className="w-full min-w-[100px] sm:min-w-[150px]" aria-label={`Stroke width: ${strokeWidth}px`}/>
+                    <Slider min={1} max={selectedTool === 'eraser' ? 100 : 50} step={1} value={[strokeWidth]} onValueChange={(val) => setStrokeWidth(val[0])} className="w-full min-w-[100px] sm:min-w-[150px]" aria-label={`${selectedTool === 'eraser' ? 'Eraser size' : 'Stroke width'}: ${strokeWidth}px`}/>
                     <span className="text-sm w-8 text-center select-none">{strokeWidth}</span>
-                  </div>
-
-                  <div className="flex items-center gap-2" title="Fill Shape">
-                    <Checkbox id="fillShape" checked={isFillEnabled} onCheckedChange={(checked) => setIsFillEnabled(checked as boolean)} disabled={selectedTool === 'freehand' || selectedTool === 'line'} aria-label="Toggle fill for shapes"/>
-                    <Label htmlFor="fillShape" className={selectedTool === 'freehand' || selectedTool === 'line' ? 'text-muted-foreground' : ''}>Fill Shape</Label>
                   </div>
                 </>
               )}
@@ -341,32 +337,25 @@ export default function CanvasCraftPage() {
         <div 
           className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
           onClick={selectedTool === 'text' ? handleCanvasInteraction : undefined}
-          // onMouseDown, onMouseMove, onMouseUp are handled by CanvasRenderer for shapes and text dragging
         >
            <CanvasRenderer
             ref={canvasComponentRef}
             tool={selectedTool}
             strokeColor={strokeColor}
-            strokeWidth={strokeWidth}
+            strokeWidth={strokeWidth} // Used for brush, shapes, and eraser size
             fillColor={fillColor}
             isFillEnabled={isFillEnabled}
-            // Pass text related props for rendering and interaction hints
             currentEditingTextId={currentEditingTextId}
-            onTextDragEnd={(id, x, y, textElement) => { // Callback from CanvasRenderer after drag
+            onTextDragEnd={(id, x, y, textElement) => { 
                 if (textElement) {
-                    const updatedData: TextElementData = {
-                        ...textElement,
-                        x,
-                        y,
-                    };
+                    const updatedData: TextElementData = { ...textElement, x, y };
                     canvasComponentRef.current?.updateTextElement(id, updatedData);
-                    // If this was the selected text, re-select and load its (potentially new) data
                     setCurrentEditingTextId(id); 
                     loadTextElementForEditing(id);
                 }
             }}
-             onTextSelect={(id) => { // Callback from CanvasRenderer on text click
-                setSelectedTool('text'); // Ensure text tool is active
+             onTextSelect={(id) => { 
+                setSelectedTool('text'); 
                 loadTextElementForEditing(id);
              }}
           />
@@ -380,10 +369,6 @@ export default function CanvasCraftPage() {
             onBlur={handleTextInputCommit}
             className="absolute z-10 bg-background border border-primary shadow-lg p-2 rounded-md text-sm"
             style={{
-              // This positioning is tricky. It needs to map canvas coords to screen coords.
-              // For now, a rough approximation or fixed position.
-              // This would ideally use the canvas's getBoundingClientRect and textInputCoords.
-              // A more robust solution would transform canvas coords to viewport coords.
               left: `${Math.min(window.innerWidth - 200, Math.max(10, (textInputCoords.x / (window.devicePixelRatio || 1)) + (canvasComponentRef.current?.getCanvasElement()?.getBoundingClientRect().left || 0) ))}px`,
               top: `${Math.min(window.innerHeight - 50, Math.max(10, (textInputCoords.y / (window.devicePixelRatio || 1)) + (canvasComponentRef.current?.getCanvasElement()?.getBoundingClientRect().top || 0) ))}px`,
               minWidth: '150px',
@@ -396,3 +381,4 @@ export default function CanvasCraftPage() {
     </div>
   );
 }
+

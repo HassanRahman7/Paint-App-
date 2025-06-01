@@ -3,7 +3,7 @@
 
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react';
 
-export type DrawingTool = 'freehand' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'text';
+export type DrawingTool = 'freehand' | 'line' | 'rectangle' | 'circle' | 'triangle' | 'text' | 'eraser';
 
 interface Point {
   x: number;
@@ -13,7 +13,7 @@ interface Point {
 export interface TextElementData {
   id: string;
   text: string;
-  x: number; y: number; // Anchor point (top-left for 'left' align, top-center for 'center', etc.)
+  x: number; y: number; 
   fontFamily: string;
   fontSize: number;
   textColor: string;
@@ -21,13 +21,12 @@ export interface TextElementData {
   isBold: boolean;
   isItalic: boolean;
   isUnderline: boolean;
-  measuredWidth: number; // Calculated width
-  measuredHeight: number; // Calculated height (based on fontSize)
+  measuredWidth: number; 
+  measuredHeight: number; 
 }
 
-
 interface ShapeAction {
-  type: Exclude<DrawingTool, 'text'>;
+  type: Exclude<DrawingTool, 'text' | 'eraser'>;
   strokeColor: string;
   strokeWidth: number;
   points?: Point[]; 
@@ -39,12 +38,17 @@ interface ShapeAction {
 
 interface TextAction {
     type: 'text';
-    id: string; // Unique ID for the text element this action pertains to
-    data: TextElementData; // The full state of the text element for this action
-    // isDeleted?: boolean; // Could be used for soft deletes if needed
+    id: string; 
+    data: TextElementData; 
 }
 
-type DrawingAction = ShapeAction | TextAction;
+interface EraserAction {
+    type: 'eraser';
+    size: number;
+    points: Point[];
+}
+
+type DrawingAction = ShapeAction | TextAction | EraserAction;
 
 
 export interface CanvasRendererHandle {
@@ -53,7 +57,6 @@ export interface CanvasRendererHandle {
   undo: () => void;
   redo: () => void;
   getCanvasElement: () => HTMLCanvasElement | null;
-  // Text specific methods
   addTextElement: (data: TextElementData) => void;
   updateTextElement: (id: string, newData: TextElementData) => void;
   getTextElementIdAtPoint: (point: Point) => Promise<string | null>;
@@ -63,12 +66,12 @@ export interface CanvasRendererHandle {
 interface CanvasRendererProps {
   tool: DrawingTool;
   strokeColor: string;
-  strokeWidth: number;
+  strokeWidth: number; // Also used for eraser size
   fillColor: string;
   isFillEnabled: boolean;
-  currentEditingTextId?: string | null; // To highlight selected text
+  currentEditingTextId?: string | null; 
   onTextDragEnd?: (id: string, x: number, y: number, textElement: TextElementData | null) => void;
-  onTextSelect?: (id: string) => void; // For page.tsx to know a text item was selected
+  onTextSelect?: (id: string) => void; 
 }
 
 
@@ -78,31 +81,33 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     const contextRef = useRef<CanvasRenderingContext2D | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    const [isDrawing, setIsDrawing] = useState(false); // For shapes
-    const [startPoint, setStartPoint] = useState<Point | null>(null); // For shapes
-    const [currentPath, setCurrentPath] = useState<Point[]>([]); // For freehand
+    const [isDrawing, setIsDrawing] = useState(false); 
+    const [startPoint, setStartPoint] = useState<Point | null>(null); 
+    const [currentPath, setCurrentPath] = useState<Point[]>([]); 
     
     const [drawingHistory, setDrawingHistory] = useState<DrawingAction[]>([]);
     const [historyIndex, setHistoryIndex] = useState<number>(-1);
     const [canvasSnapshotForPreview, setCanvasSnapshotForPreview] = useState<ImageData | null>(null);
 
-    // Text dragging state
     const [draggingTextId, setDraggingTextId] = useState<string | null>(null);
-    const [dragStartOffset, setDragStartOffset] = useState<Point | null>(null); // Offset from text origin to mouse down
+    const [dragStartOffset, setDragStartOffset] = useState<Point | null>(null); 
     const [currentDragPosition, setCurrentDragPosition] = useState<Point | null>(null);
 
+    const [mouseCanvasPosition, setMouseCanvasPosition] = useState<Point | null>(null);
+    const [isMouseOnCanvas, setIsMouseOnCanvas] = useState<boolean>(false);
 
-    const getCoordinates = useCallback((event: MouseEvent | TouchEvent): Point | null => {
+
+    const getCoordinates = useCallback((event: MouseEvent | TouchEvent | React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>): Point | null => {
       const canvas = canvasRef.current;
       if (!canvas) return null;
       const rect = canvas.getBoundingClientRect();
       let clientX, clientY;
 
-      if (event instanceof MouseEvent) {
+      if ('clientX' in event && 'clientY' in event) { // MouseEvent, React.MouseEvent
         clientX = event.clientX; clientY = event.clientY;
-      } else if (event.touches && event.touches.length > 0) {
+      } else if ('touches' in event && event.touches && event.touches.length > 0) { // TouchEvent, React.TouchEvent (start/move)
         clientX = event.touches[0].clientX; clientY = event.touches[0].clientY;
-      } else if (event.changedTouches && event.changedTouches.length > 0) {
+      } else if ('changedTouches' in event && event.changedTouches && event.changedTouches.length > 0) { // TouchEvent, React.TouchEvent (end)
         clientX = event.changedTouches[0].clientX; clientY = event.changedTouches[0].clientY;
       } else { return null; }
       
@@ -117,27 +122,17 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         ctx.textAlign = data.textAlign;
         
         let textX = data.x;
-        // Adjust for textAlign. fillText x coord is the anchor point.
-        if (data.textAlign === 'center') {
-            textX = data.x; // Anchor is center
-        } else if (data.textAlign === 'right') {
-            textX = data.x; // Anchor is right
-        }
-        // For 'left', data.x is already the left starting point.
+        if (data.textAlign === 'center') textX = data.x;
+        else if (data.textAlign === 'right') textX = data.x;
 
         ctx.fillText(data.text, textX, data.y);
 
         if (data.isUnderline) {
             const metrics = ctx.measureText(data.text);
             let underlineStartX = data.x;
-            if (data.textAlign === 'left') {
-                underlineStartX = data.x;
-            } else if (data.textAlign === 'center') {
-                underlineStartX = data.x - metrics.width / 2;
-            } else if (data.textAlign === 'right') {
-                underlineStartX = data.x - metrics.width;
-            }
-            // Approximate baseline offset, can be improved
+            if (data.textAlign === 'left') underlineStartX = data.x;
+            else if (data.textAlign === 'center') underlineStartX = data.x - metrics.width / 2;
+            else underlineStartX = data.x - metrics.width;
             const baselineOffset = data.fontSize * 0.1; 
             ctx.fillRect(underlineStartX, data.y + baselineOffset + 2, metrics.width, Math.max(1, data.fontSize / 15));
         }
@@ -152,63 +147,17 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
             else if (data.textAlign === 'center') boxX = data.x - data.measuredWidth / 2 - padding;
             else boxX = data.x - data.measuredWidth - padding;
 
-            ctx.strokeRect(
-                boxX, 
-                data.y - data.measuredHeight - padding, // y is baseline, so go up by height
-                data.measuredWidth + padding * 2, 
-                data.measuredHeight + padding * 2
-            );
+            ctx.strokeRect(boxX, data.y - data.measuredHeight - padding, data.measuredWidth + padding * 2, data.measuredHeight + padding * 2 );
             ctx.setLineDash([]);
         }
     };
-
-    const redrawCanvas = useCallback(() => {
-      const ctx = contextRef.current;
-      const canvas = canvasRef.current;
-      if (!ctx || !canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr); // Use scaled width/height
-
-      const activeShapes: ShapeAction[] = [];
-      const latestTextElements = new Map<string, TextElementData>();
-
-      for (let i = 0; i <= historyIndex; i++) {
-        const action = drawingHistory[i];
-        if (action.type === 'text') {
-            // Recalculate measuredWidth/Height here before storing
-            // This ensures it's always up-to-date with current font settings in the action's data
-            ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
-            const metrics = ctx.measureText(action.data.text);
-            const updatedData = {
-                ...action.data,
-                measuredWidth: metrics.width,
-                measuredHeight: action.data.fontSize, // Approximation
-            };
-            latestTextElements.set(action.id, updatedData);
-        } else {
-            // For shapes, we just draw them sequentially.
-            // This part might need adjustment if shapes could be "updated" or "deleted"
-            // similar to text, but current logic redraws all shapes up to historyIndex.
-             drawAction(ctx, action); // Draw shape directly
-        }
-      }
-      
-      // Draw all text elements from their latest states
-      latestTextElements.forEach((textData, id) => {
-          if (draggingTextId === id && currentDragPosition) {
-              // Draw preview of text being dragged
-              drawTextElement(ctx, { ...textData, x: currentDragPosition.x, y: currentDragPosition.y }, currentEditingTextId === id);
-          } else {
-              drawTextElement(ctx, textData, currentEditingTextId === id);
-          }
-      });
-
-    }, [drawingHistory, historyIndex, currentEditingTextId, draggingTextId, currentDragPosition]);
     
-    const drawAction = (ctx: CanvasRenderingContext2D, action: ShapeAction) => { // Only for shapes now
+    const drawShapeAction = (ctx: CanvasRenderingContext2D, action: ShapeAction) => { 
       ctx.strokeStyle = action.strokeColor;
       ctx.lineWidth = action.strokeWidth;
       ctx.fillStyle = action.fillColor || '#000000';
+      ctx.globalCompositeOperation = 'source-over';
+
 
       switch (action.type) {
         case 'freehand':
@@ -256,10 +205,61 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       }
     };
 
+    const redrawCanvas = useCallback(() => {
+      const ctx = contextRef.current;
+      const canvas = canvasRef.current;
+      if (!ctx || !canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+
+      const latestTextElements = new Map<string, TextElementData>();
+
+      for (let i = 0; i <= historyIndex; i++) {
+        const action = drawingHistory[i];
+        ctx.globalCompositeOperation = 'source-over'; // Default composite operation
+
+        if (action.type === 'text') {
+            ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
+            const metrics = ctx.measureText(action.data.text);
+            const updatedData = { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize };
+            latestTextElements.set(action.id, updatedData);
+        } else if (action.type === 'eraser') {
+            const { points, size } = action;
+            // No need to save/restore here if clearRect is the only thing
+            for (const point of points) {
+                ctx.clearRect(point.x - size / 2, point.y - size / 2, size, size);
+            }
+        } else { // ShapeAction
+            drawShapeAction(ctx, action as ShapeAction);
+        }
+      }
+      
+      latestTextElements.forEach((textData, id) => {
+          if (draggingTextId === id && currentDragPosition) {
+              drawTextElement(ctx, { ...textData, x: currentDragPosition.x, y: currentDragPosition.y }, currentEditingTextId === id);
+          } else {
+              drawTextElement(ctx, textData, currentEditingTextId === id);
+          }
+      });
+
+      // Draw eraser preview if tool is eraser, not drawing, and mouse is on canvas
+      if (tool === 'eraser' && !isDrawing && isMouseOnCanvas && mouseCanvasPosition && ctx) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = 'rgba(100, 100, 100, 0.7)'; 
+          ctx.lineWidth = 1;
+          const previewSize = strokeWidth; 
+          ctx.strokeRect(mouseCanvasPosition.x - previewSize / 2, mouseCanvasPosition.y - previewSize / 2, previewSize, previewSize);
+          ctx.restore();
+      }
+
+    }, [drawingHistory, historyIndex, currentEditingTextId, draggingTextId, currentDragPosition, tool, isDrawing, isMouseOnCanvas, mouseCanvasPosition, strokeWidth]);
+
+
     const initializeCanvas = useCallback(() => {
       const canvas = canvasRef.current;
       if (!canvas || !containerRef.current) return;
-      const context = canvas.getContext('2d');
+      const context = canvas.getContext('2d', { willReadFrequently: true }); // willReadFrequently for getImageData
       if (!context) return;
 
       const dpr = window.devicePixelRatio || 1;
@@ -269,11 +269,10 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
 
-      context.scale(dpr, dpr); // Scale once
+      context.scale(dpr, dpr); 
       context.lineCap = 'round';
       context.lineJoin = 'round';
-      // Set base text properties, though they will be overridden per element
-      context.textBaseline = 'alphabetic'; // Or 'top' if x,y is top-left. For fillText, y is baseline.
+      context.textBaseline = 'alphabetic'; 
       contextRef.current = context;
       redrawCanvas();
     }, [redrawCanvas]);
@@ -287,35 +286,34 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       return () => obs.unobserve(resizeTarget);
     }, [initializeCanvas]);
 
+    useEffect(() => { // Effect to redraw when mouse position changes for eraser preview
+        if (tool === 'eraser' && !isDrawing) {
+            redrawCanvas();
+        }
+    }, [mouseCanvasPosition, isMouseOnCanvas, tool, isDrawing, redrawCanvas]);
+
     const getTextElementAtPointInternal = useCallback((point: Point): TextElementData | null => {
         const ctx = contextRef.current;
         if (!ctx) return null;
-
-        // Iterate history backwards to find the latest state of text elements
         const latestTextElements = new Map<string, TextElementData>();
         for (let i = historyIndex; i >= 0; i--) {
             const action = drawingHistory[i];
             if (action.type === 'text' && !latestTextElements.has(action.id)) {
-                 // Recalculate width/height for hit testing, similar to redrawCanvas
                 ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
                 const metrics = ctx.measureText(action.data.text);
-                latestTextElements.set(action.id, {
-                    ...action.data,
-                    measuredWidth: metrics.width,
-                    measuredHeight: action.data.fontSize, // Approximation
-                });
+                latestTextElements.set(action.id, { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize });
             }
         }
         
-        for (const textData of Array.from(latestTextElements.values()).reverse()) { // Check topmost first
+        for (const textData of Array.from(latestTextElements.values()).reverse()) { 
             let x1 = textData.x;
             if (textData.textAlign === 'left') x1 = textData.x;
             else if (textData.textAlign === 'center') x1 = textData.x - textData.measuredWidth / 2;
             else x1 = textData.x - textData.measuredWidth;
             
-            const y1 = textData.y - textData.measuredHeight; // y is baseline, so box starts above
+            const y1 = textData.y - textData.measuredHeight; 
             const x2 = x1 + textData.measuredWidth;
-            const y2 = textData.y; // Baseline
+            const y2 = textData.y; 
 
             if (point.x >= x1 && point.x <= x2 && point.y >= y1 && point.y <= y2) {
                 return textData;
@@ -338,29 +336,31 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
             const offsetX = coords.x - clickedText.x;
             const offsetY = coords.y - clickedText.y;
             setDragStartOffset({ x: offsetX, y: offsetY });
-            setCurrentDragPosition({x: clickedText.x, y: clickedText.y}); // Initialize currentDragPosition
+            setCurrentDragPosition({x: clickedText.x, y: clickedText.y});
              if(onTextSelect) onTextSelect(clickedText.id);
         } else {
-            // Click on empty canvas in text mode - page.tsx handles this via its own click handler
-             setDraggingTextId(null); // Ensure no drag starts
+             setDraggingTextId(null); 
         }
-        return; // Text tool interaction handled differently
+        return; 
       }
 
-      // Shape drawing logic
       setIsDrawing(true);
       setStartPoint(coords);
-      if (tool === 'freehand') {
+      if (tool === 'freehand' || tool === 'eraser') {
         setCurrentPath([coords]);
-      } else {
+        if (tool === 'eraser') { // Apply first clearRect for eraser
+            const eraserSize = strokeWidth;
+            contextRef.current.clearRect(coords.x - eraserSize / 2, coords.y - eraserSize / 2, eraserSize, eraserSize);
+        }
+      } else { // For shapes needing preview
         const dpr = window.devicePixelRatio || 1;
         setCanvasSnapshotForPreview(contextRef.current.getImageData(0, 0, contextRef.current.canvas.width / dpr, contextRef.current.canvas.height / dpr));
       }
-    }, [getCoordinates, tool, getTextElementAtPointInternal, onTextSelect]);
+    }, [getCoordinates, tool, getTextElementAtPointInternal, onTextSelect, strokeWidth]);
 
     const drawInternal = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
       const ctx = contextRef.current;
-      if (!ctx || !startPoint && !draggingTextId) return;
+      if (!ctx || (!startPoint && !draggingTextId)) return; // Ensure startPoint or draggingTextId is set
       if (event.nativeEvent instanceof TouchEvent) event.preventDefault();
       const currentCoords = getCoordinates(event.nativeEvent);
       if (!currentCoords) return;
@@ -369,43 +369,61 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         const newX = currentCoords.x - dragStartOffset.x;
         const newY = currentCoords.y - dragStartOffset.y;
         setCurrentDragPosition({x: newX, y: newY});
-        requestAnimationFrame(redrawCanvas); // Redraw for live drag preview
+        requestAnimationFrame(redrawCanvas); 
         return;
       }
       
-      if (!isDrawing || tool === 'text' || !startPoint) return; // Only for shapes now
+      if (!isDrawing || tool === 'text' || !startPoint) return; 
 
+      if (tool === 'eraser') {
+          setCurrentPath(prevPath => [...prevPath, currentCoords]);
+          const eraserSize = strokeWidth; // prop
+          ctx.clearRect(currentCoords.x - eraserSize / 2, currentCoords.y - eraserSize / 2, eraserSize, eraserSize);
+          return; // Eraser live drawing handled
+      }
+      
       ctx.strokeStyle = strokeColor;
       ctx.lineWidth = strokeWidth;
       ctx.fillStyle = fillColor;
-      
+      ctx.globalCompositeOperation = 'source-over';
+
       if (tool === 'freehand') {
+        const prevCurrentPath = currentPathRef.current; // Use ref for most up-to-date path
         setCurrentPath(prevPath => [...prevPath, currentCoords]);
+        currentPathRef.current = [...prevCurrentPath, currentCoords]; // Update ref
+
         ctx.beginPath();
-        ctx.moveTo(currentPath[currentPath.length-1].x, currentPath[currentPath.length-1].y);
+        if (prevCurrentPath.length > 0) {
+             ctx.moveTo(prevCurrentPath[prevCurrentPath.length-1].x, prevCurrentPath[prevCurrentPath.length-1].y);
+        } else if (startPoint) {
+            ctx.moveTo(startPoint.x, startPoint.y); // Fallback if path somehow empty
+        }
         ctx.lineTo(currentCoords.x, currentCoords.y);
         ctx.stroke();
-      } else { // Shape preview
+      } else { 
         if (canvasSnapshotForPreview) ctx.putImageData(canvasSnapshotForPreview, 0, 0);
-        else redrawCanvas(); // Fallback
+        else redrawCanvas(); 
         
-        const tempAction: ShapeAction = { type: tool as Exclude<DrawingTool, 'text'>, strokeColor, strokeWidth, fillColor, isFilled: isFillEnabled, startPoint, endPoint: currentCoords };
-        drawAction(ctx, tempAction);
+        const tempAction: ShapeAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser'>, strokeColor, strokeWidth, fillColor, isFilled: isFillEnabled, startPoint, endPoint: currentCoords };
+        drawShapeAction(ctx, tempAction);
       }
-    }, [isDrawing, startPoint, getCoordinates, tool, strokeColor, strokeWidth, fillColor, isFillEnabled, currentPath, canvasSnapshotForPreview, redrawCanvas, draggingTextId, dragStartOffset]);
+    }, [isDrawing, startPoint, getCoordinates, tool, strokeColor, strokeWidth, fillColor, isFillEnabled, canvasSnapshotForPreview, redrawCanvas, draggingTextId, dragStartOffset]);
+    
+    const currentPathRef = useRef<Point[]>([]); // Ref to hold currentPath for freehand
+    useEffect(() => {
+        currentPathRef.current = currentPath;
+    }, [currentPath]);
+
 
     const handleMouseUpTouchEnd = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
         if (draggingTextId && currentDragPosition && onTextDragEnd) {
             const textElement = drawingHistory.slice(0, historyIndex + 1).reverse()
                 .find(act => act.type === 'text' && act.id === draggingTextId) as TextAction | undefined;
-            
             if (textElement) {
                  onTextDragEnd(draggingTextId, currentDragPosition.x, currentDragPosition.y, textElement.data);
             }
-            setDraggingTextId(null);
-            setDragStartOffset(null);
-            setCurrentDragPosition(null);
-            requestAnimationFrame(redrawCanvas); // Final redraw after drag
+            setDraggingTextId(null); setDragStartOffset(null); setCurrentDragPosition(null);
+            requestAnimationFrame(redrawCanvas); 
             return;
         }
 
@@ -416,19 +434,24 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
         const nativeEvent = event.nativeEvent;
         const finalCoords = getCoordinates(nativeEvent);
+        let newAction: DrawingAction | null = null;
+        const pathForAction = [...currentPathRef.current, ...(finalCoords && currentPathRef.current.length > 0 && currentPathRef.current[currentPathRef.current.length-1].x !== finalCoords.x && currentPathRef.current[currentPathRef.current.length-1].y !== finalCoords.y ? [finalCoords] : finalCoords && currentPathRef.current.length === 0 ? [finalCoords] : [])];
 
-        let newAction: ShapeAction | null = null;
-        const currentTool = tool as Exclude<DrawingTool, 'text'>;
 
         if (tool === 'freehand') {
-            if (currentPath.length > 0) {
-                 newAction = { type: currentTool, points: [...currentPath, ...(finalCoords && currentPath[currentPath.length-1].x !== finalCoords.x && currentPath[currentPath.length-1].y !== finalCoords.y ? [finalCoords] : [])], strokeColor, strokeWidth };
+            if (pathForAction.length > 0) {
+                 newAction = { type: 'freehand', points: pathForAction, strokeColor, strokeWidth };
             }
-        } else if (finalCoords) {
-            newAction = { type: currentTool, startPoint, endPoint: finalCoords, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined };
-        } else if (currentPath.length > 0 && tool !== 'freehand') { // Fallback
-             newAction = { type: currentTool, startPoint, endPoint: currentPath[currentPath.length -1] || startPoint, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined};
+        } else if (tool === 'eraser') {
+            if (pathForAction.length > 0) {
+                newAction = { type: 'eraser', points: pathForAction, size: strokeWidth };
+            }
+        } else if (finalCoords) { // Shapes
+            newAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser' | 'freehand'>, startPoint, endPoint: finalCoords, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined };
+        } else if (pathForAction.length > 0 && tool !== 'freehand' && tool !== 'eraser') { 
+             newAction = { type: tool as Exclude<DrawingTool, 'text' | 'eraser' | 'freehand'>, startPoint, endPoint: pathForAction[pathForAction.length -1] || startPoint, strokeColor, strokeWidth, fillColor: (tool !== 'line') ? fillColor : undefined, isFilled: (tool !== 'line') ? isFillEnabled : undefined};
         }
+
 
         if (newAction) {
             const newHistory = drawingHistory.slice(0, historyIndex + 1);
@@ -436,12 +459,9 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
             setHistoryIndex(newHistory.length);
         }
         
-        setIsDrawing(false);
-        setStartPoint(null);
-        setCurrentPath([]);
-        setCanvasSnapshotForPreview(null);
-        if (newAction) requestAnimationFrame(redrawCanvas);
-    }, [isDrawing, startPoint, tool, currentPath, strokeColor, strokeWidth, fillColor, isFillEnabled, drawingHistory, historyIndex, redrawCanvas, getCoordinates, draggingTextId, currentDragPosition, onTextDragEnd]);
+        setIsDrawing(false); setStartPoint(null); setCurrentPath([]); currentPathRef.current = []; setCanvasSnapshotForPreview(null);
+        if (newAction) requestAnimationFrame(redrawCanvas); // Redraw with the new action committed
+    }, [isDrawing, startPoint, tool, strokeColor, strokeWidth, fillColor, isFillEnabled, drawingHistory, historyIndex, redrawCanvas, getCoordinates, draggingTextId, currentDragPosition, onTextDragEnd]);
 
     useImperativeHandle(ref, () => ({
       clearCanvas: () => {
@@ -456,18 +476,11 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
         if (canvasRef.current && contextRef.current) {
             const canvas = canvasRef.current;
             const tempCanvas = document.createElement('canvas');
-            const dpr = window.devicePixelRatio || 1;
-            // Use original scaled dimensions for tempCanvas
-            tempCanvas.width = canvas.width; 
-            tempCanvas.height = canvas.height;
+            tempCanvas.width = canvas.width; tempCanvas.height = canvas.height;
             const tempCtx = tempCanvas.getContext('2d');
             if (tempCtx) {
-                tempCtx.fillStyle = '#FFFFFF';
-                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-                // Draw the current canvas content onto the temp canvas
-                // No need to scale again as canvas already contains scaled drawing
+                tempCtx.fillStyle = '#FFFFFF'; tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
                 tempCtx.drawImage(canvas, 0, 0);
-
                 const dataURL = tempCanvas.toDataURL('image/png');
                 const link = document.createElement('a');
                 link.href = dataURL; link.download = filename;
@@ -490,17 +503,11 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       getCanvasElement: () => canvasRef.current,
       addTextElement: (data: TextElementData) => {
         const newHistory = drawingHistory.slice(0, historyIndex + 1);
-        // Recalculate width/height with current context before adding to history
-        const ctx = contextRef.current;
-        let finalData = data;
+        const ctx = contextRef.current; let finalData = data;
         if(ctx){
             ctx.font = `${data.isBold ? 'bold ' : ''}${data.isItalic ? 'italic ' : ''}${data.fontSize}px ${data.fontFamily}`;
             const metrics = ctx.measureText(data.text);
-            finalData = {
-                ...data,
-                measuredWidth: metrics.width,
-                measuredHeight: data.fontSize, // Approximation
-            };
+            finalData = { ...data, measuredWidth: metrics.width, measuredHeight: data.fontSize };
         }
         setDrawingHistory([...newHistory, { type: 'text', id: finalData.id, data: finalData }]);
         setHistoryIndex(newHistory.length);
@@ -508,39 +515,26 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       },
       updateTextElement: (id: string, newData: TextElementData) => {
         const newHistory = drawingHistory.slice(0, historyIndex + 1);
-         const ctx = contextRef.current;
-        let finalData = newData;
+         const ctx = contextRef.current; let finalData = newData;
         if(ctx){
             ctx.font = `${newData.isBold ? 'bold ' : ''}${newData.isItalic ? 'italic ' : ''}${newData.fontSize}px ${newData.fontFamily}`;
             const metrics = ctx.measureText(newData.text);
-            finalData = {
-                ...newData,
-                measuredWidth: metrics.width,
-                measuredHeight: newData.fontSize, // Approximation
-            };
+            finalData = { ...newData, measuredWidth: metrics.width, measuredHeight: newData.fontSize };
         }
         setDrawingHistory([...newHistory, { type: 'text', id: id, data: finalData }]);
         setHistoryIndex(newHistory.length);
         requestAnimationFrame(redrawCanvas);
       },
-      getTextElementIdAtPoint: async (point: Point): Promise<string | null> => {
-        return getTextElementAtPointInternal(point)?.id || null;
-      },
+      getTextElementIdAtPoint: async (point: Point): Promise<string | null> => getTextElementAtPointInternal(point)?.id || null,
       getTextElementById: async (id: string): Promise<TextElementData | null> => {
-        // Find the latest state of the text element with this ID from history
         for (let i = historyIndex; i >= 0; i--) {
             const action = drawingHistory[i];
             if (action.type === 'text' && action.id === id) {
-                // Ensure measuredWidth/Height are up-to-date if returning
                 const ctx = contextRef.current;
                 if(ctx) {
                     ctx.font = `${action.data.isBold ? 'bold ' : ''}${action.data.isItalic ? 'italic ' : ''}${action.data.fontSize}px ${action.data.fontFamily}`;
                     const metrics = ctx.measureText(action.data.text);
-                    return {
-                        ...action.data,
-                        measuredWidth: metrics.width,
-                        measuredHeight: action.data.fontSize,
-                    };
+                    return { ...action.data, measuredWidth: metrics.width, measuredHeight: action.data.fontSize };
                 }
                 return action.data;
             }
@@ -549,14 +543,45 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       },
     }));
 
+    const handleContainerMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (tool === 'eraser' && !isDrawing) {
+            const coords = getCoordinates(event);
+            setMouseCanvasPosition(coords);
+        }
+    }, [tool, isDrawing, getCoordinates]);
+
+    const handleContainerMouseEnter = useCallback(() => {
+        if (tool === 'eraser' && !isDrawing) {
+            setIsMouseOnCanvas(true);
+        }
+    }, [tool, isDrawing]);
+    
+    const handleContainerMouseLeave = useCallback(() => {
+        if (tool === 'eraser' && !isDrawing) {
+            setIsMouseOnCanvas(false);
+            setMouseCanvasPosition(null); // Explicitly nullify to ensure preview is cleared
+        }
+        // Also call mouse up if drawing was in progress (for shapes/freehand)
+        if (isDrawing && (tool !== 'text' && tool !== 'eraser')) {
+             const mockEvent = event as unknown as React.MouseEvent<HTMLCanvasElement>; // Cast, might be risky
+            handleMouseUpTouchEnd(mockEvent);
+        }
+    }, [tool, isDrawing, handleMouseUpTouchEnd]);
+
+
     return (
-      <div ref={containerRef} className="w-full h-full touch-none">
+      <div 
+        ref={containerRef} 
+        className="w-full h-full touch-none"
+        onMouseMove={handleContainerMouseMove}
+        onMouseEnter={handleContainerMouseEnter}
+        onMouseLeave={handleContainerMouseLeave}
+      >
         <canvas
           ref={canvasRef}
           onMouseDown={startDrawingInternal}
           onMouseMove={drawInternal}
           onMouseUp={handleMouseUpTouchEnd}
-          onMouseLeave={isDrawing || draggingTextId ? handleMouseUpTouchEnd : undefined}
           onTouchStart={startDrawingInternal}
           onTouchMove={drawInternal}
   	      onTouchEnd={handleMouseUpTouchEnd}
@@ -570,3 +595,4 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
 CanvasRenderer.displayName = 'CanvasRenderer';
 export default CanvasRenderer;
+
