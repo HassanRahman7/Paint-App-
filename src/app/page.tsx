@@ -9,16 +9,39 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Eraser, ImagePlus } from 'lucide-react';
+import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Eraser, ImagePlus, Square, GripVertical } from 'lucide-react';
 import CanvasRenderer, { type CanvasRendererHandle, type DrawingTool, type TextElementData, type ImageActionData } from '@/components/canvas-renderer';
 import { cn } from '@/lib/utils';
 
 const FONT_FAMILIES = ['Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New', 'Comic Sans MS', 'Impact', 'Lucida Console'];
 
+interface PendingImageState {
+  src: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  aspectRatio: number;
+  currentX: number;
+  currentY: number;
+  currentWidth: number;
+  currentHeight: number;
+}
+
+interface ImageDragInteractionState {
+  active: boolean;
+  type: 'move' | 'resize-br' | null; // Add more resize types later (tl, tr, bl, etc.)
+  startMouseX: number;
+  startMouseY: number;
+  initialElementX: number;
+  initialElementY: number;
+  initialElementWidth: number;
+  initialElementHeight: number;
+}
+
+
 export default function CanvasCraftPage() {
   const [strokeColor, setStrokeColor] = useState<string>('#000000');
   const [fillColor, setFillColor] = useState<string>('#79B4B7');
-  const [strokeWidth, setStrokeWidth] = useState<number>(5); 
+  const [strokeWidth, setStrokeWidth] = useState<number>(5);
   const [selectedTool, setSelectedTool] = useState<DrawingTool>('freehand');
   const [isFillEnabled, setIsFillEnabled] = useState<boolean>(true);
 
@@ -35,21 +58,24 @@ export default function CanvasCraftPage() {
   const [textInputCoords, setTextInputCoords] = useState<{ x: number; y: number } | null>(null);
   const [currentEditingTextId, setCurrentEditingTextId] = useState<string | null>(null);
 
-  const [previewImageData, setPreviewImageData] = useState<{ src: string; x: number; y: number; width: number; height: number} | null>(null);
-  const [mouseCanvasPosition, setMouseCanvasPosition] = useState<{x: number; y: number} | null>(null);
-
+  const [pendingImage, setPendingImage] = useState<PendingImageState | null>(null);
+  const [imageDragState, setImageDragState] = useState<ImageDragInteractionState>({
+    active: false, type: null, startMouseX: 0, startMouseY: 0,
+    initialElementX: 0, initialElementY: 0, initialElementWidth: 0, initialElementHeight: 0,
+  });
 
   const canvasComponentRef = useRef<CanvasRendererHandle>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mainCanvasAreaRef = useRef<HTMLDivElement>(null);
+  const imagePreviewDivRef = useRef<HTMLDivElement>(null);
 
 
   const handleClearCanvas = useCallback(() => {
     canvasComponentRef.current?.clearCanvas();
     setCurrentEditingTextId(null);
     setIsTextInputVisible(false);
-    setPreviewImageData(null);
+    setPendingImage(null);
   }, []);
 
   const handleDownloadDrawing = useCallback(() => {
@@ -58,14 +84,14 @@ export default function CanvasCraftPage() {
 
   const handleUndo = useCallback(() => {
     canvasComponentRef.current?.undo();
-    const potentiallyDeselectedId = currentEditingTextId; 
-    setCurrentEditingTextId(null); 
+    const potentiallyDeselectedId = currentEditingTextId;
+    setCurrentEditingTextId(null);
     setIsTextInputVisible(false);
-    setPreviewImageData(null);
+    // If an image was pending and undo is hit, it might be confusing. For now, undo doesn't affect pending image.
+    // setPendingImage(null); 
     if (potentiallyDeselectedId) {
         canvasComponentRef.current?.getTextElementById(potentiallyDeselectedId).then(el => {
-            if(!el) {
-            }
+            if(!el) { /* Potentially removed by undo */ }
         });
     }
   }, [currentEditingTextId]);
@@ -74,7 +100,7 @@ export default function CanvasCraftPage() {
     canvasComponentRef.current?.redo();
     setCurrentEditingTextId(null);
     setIsTextInputVisible(false);
-    setPreviewImageData(null);
+    // setPendingImage(null);
   }, []);
 
   useEffect(() => {
@@ -82,7 +108,7 @@ export default function CanvasCraftPage() {
       textInputRef.current.focus();
     }
   }, [isTextInputVisible]);
-  
+
   const loadTextElementForEditing = useCallback(async (textId: string) => {
     const element = await canvasComponentRef.current?.getTextElementById(textId);
     if (element) {
@@ -95,34 +121,18 @@ export default function CanvasCraftPage() {
       setIsTextItalic(element.isItalic);
       setIsTextUnderline(element.isUnderline);
       setCurrentEditingTextId(textId);
-      setTextInputCoords({x: element.x, y: element.y}); 
+      setTextInputCoords({x: element.x, y: element.y});
       setIsTextInputVisible(true);
     }
   }, []);
 
-
   const handleCanvasInteraction = useCallback(async (event: React.MouseEvent<HTMLDivElement>) => {
-    if (selectedTool === 'image' && previewImageData && canvasComponentRef.current) {
-        const canvasEl = canvasComponentRef.current.getCanvasElement();
-        if (!canvasEl) return;
-        const rect = canvasEl.getBoundingClientRect();
-        const logicalX = event.clientX - rect.left;
-        const logicalY = event.clientY - rect.top;
-
-        canvasComponentRef.current.addImageElement({
-            id: `image-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            src: previewImageData.src,
-            x: logicalX - previewImageData.width / 2, // Center image on click
-            y: logicalY - previewImageData.height / 2,
-            width: previewImageData.width,
-            height: previewImageData.height,
-        });
-        setPreviewImageData(null); 
-        return; 
+    if (selectedTool === 'image' && pendingImage) {
+        // Click on canvas with pending image does nothing, placement is via button
+        return;
     }
-
     if (selectedTool !== 'text' || !canvasComponentRef.current) {
-      setIsTextInputVisible(false); 
+      setIsTextInputVisible(false);
       setCurrentEditingTextId(null);
       return;
     }
@@ -139,11 +149,11 @@ export default function CanvasCraftPage() {
       await loadTextElementForEditing(clickedTextId);
     } else {
       setCurrentEditingTextId(null);
-      setTextInputValue(''); 
-      setTextInputCoords({ x: logicalX, y: logicalY }); 
+      setTextInputValue('');
+      setTextInputCoords({ x: logicalX, y: logicalY });
       setIsTextInputVisible(true);
     }
-  }, [selectedTool, loadTextElementForEditing, previewImageData]);
+  }, [selectedTool, loadTextElementForEditing, pendingImage]);
 
 
   const handleTextInputCommit = useCallback(() => {
@@ -152,50 +162,28 @@ export default function CanvasCraftPage() {
       setTextInputValue('');
       return;
     }
-
     const textData: Omit<TextElementData, 'id' | 'measuredWidth' | 'measuredHeight'> = {
       text: textInputValue,
-      x: textInputCoords.x, 
-      y: textInputCoords.y, 
-      fontFamily,
-      fontSize,
-      textColor,
-      textAlign,
-      isBold: isTextBold,
-      isItalic: isTextItalic,
-      isUnderline: isTextUnderline,
+      x: textInputCoords.x, y: textInputCoords.y, fontFamily, fontSize, textColor,
+      textAlign, isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline,
     };
-
     if (currentEditingTextId) {
-      canvasComponentRef.current?.updateTextElement(currentEditingTextId, {
-        ...textData,
-        id: currentEditingTextId,
-      } as TextElementData);
+      canvasComponentRef.current?.updateTextElement(currentEditingTextId, { ...textData, id: currentEditingTextId } as TextElementData);
     } else {
-      canvasComponentRef.current?.addTextElement({
-        ...textData,
-        id: `text-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      } as TextElementData);
+      canvasComponentRef.current?.addTextElement({ ...textData, id: `text-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` } as TextElementData);
     }
-
     setIsTextInputVisible(false);
     setTextInputValue('');
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId]);
 
   useEffect(() => {
-    if (currentEditingTextId && !isTextInputVisible) { 
+    if (currentEditingTextId && !isTextInputVisible) {
       const updateFormatting = async () => {
         const currentElement = await canvasComponentRef.current?.getTextElementById(currentEditingTextId);
         if (currentElement) {
           const updatedData: TextElementData = {
-            ...currentElement, 
-            fontFamily,
-            fontSize,
-            textColor,
-            textAlign,
-            isBold: isTextBold,
-            isItalic: isTextItalic,
-            isUnderline: isTextUnderline,
+            ...currentElement, fontFamily, fontSize, textColor, textAlign,
+            isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline,
           };
           canvasComponentRef.current?.updateTextElement(currentEditingTextId, updatedData);
         }
@@ -203,6 +191,104 @@ export default function CanvasCraftPage() {
       updateFormatting();
     }
   }, [fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId, isTextInputVisible]);
+
+  const handlePlaceImage = () => {
+    if (pendingImage && canvasComponentRef.current) {
+      canvasComponentRef.current.addImageElement({
+        id: `image-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        src: pendingImage.src,
+        x: pendingImage.currentX,
+        y: pendingImage.currentY,
+        width: pendingImage.currentWidth,
+        height: pendingImage.currentHeight,
+      });
+      setPendingImage(null); // Clear after placing
+    }
+  };
+
+  const handleCancelImage = () => {
+    setPendingImage(null);
+    if (fileInputRef.current) fileInputRef.current.value = ""; // Reset file input
+  };
+  
+  useEffect(() => {
+    const handleGlobalMouseMove = (event: MouseEvent) => {
+      if (!imageDragState.active || !pendingImage || !mainCanvasAreaRef.current) return;
+      event.preventDefault();
+
+      const mainRect = mainCanvasAreaRef.current.getBoundingClientRect();
+      const mouseXInArea = event.clientX - mainRect.left;
+      const mouseYInArea = event.clientY - mainRect.top;
+
+      const deltaX = mouseXInArea - imageDragState.startMouseX;
+      const deltaY = mouseYInArea - imageDragState.startMouseY;
+
+      if (imageDragState.type === 'move') {
+        setPendingImage(prev => prev ? {
+          ...prev,
+          currentX: imageDragState.initialElementX + deltaX,
+          currentY: imageDragState.initialElementY + deltaY,
+        } : null);
+      } else if (imageDragState.type === 'resize-br') {
+        let newWidth = imageDragState.initialElementWidth + deltaX;
+        let newHeight = imageDragState.initialElementHeight + deltaY;
+
+        // Maintain aspect ratio
+        if (newWidth / pendingImage.aspectRatio > newHeight) { // Width is the driver
+            newHeight = newWidth / pendingImage.aspectRatio;
+        } else { // Height is the driver
+            newWidth = newHeight * pendingImage.aspectRatio;
+        }
+        
+        newWidth = Math.max(20, newWidth); // Min width
+        newHeight = Math.max(20, newHeight); // Min height
+
+
+        setPendingImage(prev => prev ? {
+          ...prev,
+          currentWidth: newWidth,
+          currentHeight: newHeight,
+        } : null);
+      }
+    };
+
+    const handleGlobalMouseUp = () => {
+      if (imageDragState.active) {
+        setImageDragState(prev => ({ ...prev, active: false, type: null }));
+      }
+    };
+
+    if (imageDragState.active) {
+      window.addEventListener('mousemove', handleGlobalMouseMove);
+      window.addEventListener('mouseup', handleGlobalMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [imageDragState, pendingImage]);
+
+
+  const onImagePreviewMouseDown = (event: React.MouseEvent<HTMLDivElement>, type: 'move' | 'resize-br') => {
+    if (!pendingImage || !mainCanvasAreaRef.current) return;
+    event.preventDefault();
+    event.stopPropagation(); // Prevent canvas interaction if any behind
+
+    const mainRect = mainCanvasAreaRef.current.getBoundingClientRect();
+    const startMouseX = event.clientX - mainRect.left;
+    const startMouseY = event.clientY - mainRect.top;
+
+    setImageDragState({
+      active: true,
+      type,
+      startMouseX,
+      startMouseY,
+      initialElementX: pendingImage.currentX,
+      initialElementY: pendingImage.currentY,
+      initialElementWidth: pendingImage.currentWidth,
+      initialElementHeight: pendingImage.currentHeight,
+    });
+  };
 
 
   useEffect(() => {
@@ -214,60 +300,67 @@ export default function CanvasCraftPage() {
         else if (event.key === 's'  && (event.target as HTMLElement)?.tagName !== 'INPUT' && (event.target as HTMLElement)?.tagName !== 'TEXTAREA') { event.preventDefault(); handleDownloadDrawing(); }
       }
       if (isTextInputVisible) {
-        if (event.key === 'Enter' && !event.shiftKey) {
-          event.preventDefault();
-          handleTextInputCommit();
-        } else if (event.key === 'Escape') {
-          event.preventDefault();
-          setIsTextInputVisible(false);
-          setTextInputValue('');
-          setCurrentEditingTextId(null); 
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleTextInputCommit(); }
+        else if (event.key === 'Escape') {
+          event.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); setCurrentEditingTextId(null);
         }
-      } else if (selectedTool === 'image' && previewImageData && event.key === 'Escape') {
-          event.preventDefault();
-          setPreviewImageData(null);
+      } else if (selectedTool === 'image' && pendingImage && event.key === 'Escape') {
+          event.preventDefault(); handleCancelImage();
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleClearCanvas, handleDownloadDrawing, handleUndo, handleRedo, isTextInputVisible, handleTextInputCommit, selectedTool, previewImageData]);
+  }, [handleClearCanvas, handleDownloadDrawing, handleUndo, handleRedo, isTextInputVisible, handleTextInputCommit, selectedTool, pendingImage]);
 
   const commonInputClass = "w-10 h-10 p-0 bg-transparent border border-input rounded-md cursor-pointer appearance-none [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-none";
   const isShapeTool = ['rectangle', 'circle', 'triangle'].includes(selectedTool);
-  
+
   const getTextInputStyle = () => {
     if (!isTextInputVisible || !textInputCoords || !canvasComponentRef.current) return { display: 'none' };
     const canvasEl = canvasComponentRef.current.getCanvasElement();
     if (!canvasEl) return { display: 'none' };
-
     const canvasRect = canvasEl.getBoundingClientRect();
+    // Position relative to the viewport
     const screenX = textInputCoords.x + canvasRect.left;
     const screenY = textInputCoords.y + canvasRect.top;
-    
     return {
       left: `${Math.min(window.innerWidth - 200, Math.max(10, screenX))}px`,
       top: `${Math.min(window.innerHeight - 50, Math.max(10, screenY))}px`,
-      minWidth: '150px',
-      maxWidth: '300px',
+      minWidth: '150px', maxWidth: '300px',
     };
   };
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
+    if (file && mainCanvasAreaRef.current && canvasComponentRef.current?.getCanvasElement()) {
         const reader = new FileReader();
         reader.onload = (e) => {
             const src = e.target?.result as string;
             if (src) {
                 const img = new Image();
                 img.onload = () => {
-                    setPreviewImageData({
+                    const canvasEl = canvasComponentRef.current!.getCanvasElement()!;
+                    const canvasWidth = canvasEl.width / (window.devicePixelRatio || 1);
+                    const canvasHeight = canvasEl.height / (window.devicePixelRatio || 1);
+                    
+                    const aspectRatio = img.naturalWidth / img.naturalHeight;
+                    let initialWidth = Math.min(img.naturalWidth, canvasWidth * 0.5);
+                    let initialHeight = initialWidth / aspectRatio;
+
+                    if (initialHeight > canvasHeight * 0.5) {
+                        initialHeight = canvasHeight * 0.5;
+                        initialWidth = initialHeight * aspectRatio;
+                    }
+                    
+                    setPendingImage({
                         src,
-                        x: mouseCanvasPosition?.x ? mouseCanvasPosition.x - img.naturalWidth / 2 : 0,
-                        y: mouseCanvasPosition?.y ? mouseCanvasPosition.y - img.naturalHeight / 2 : 0,
-                        width: img.naturalWidth, 
-                        height: img.naturalHeight,
+                        naturalWidth: img.naturalWidth,
+                        naturalHeight: img.naturalHeight,
+                        aspectRatio,
+                        currentX: (canvasWidth - initialWidth) / 2,
+                        currentY: (canvasHeight - initialHeight) / 2,
+                        currentWidth: initialWidth,
+                        currentHeight: initialHeight,
                     });
                 };
                 img.src = src;
@@ -275,50 +368,8 @@ export default function CanvasCraftPage() {
         };
         reader.readAsDataURL(file);
     }
-    if (event.target) {
-        event.target.value = ""; // Reset file input
-    }
+    if (event.target) event.target.value = "";
   };
-
-  useEffect(() => {
-    if (selectedTool === 'image' && previewImageData && mouseCanvasPosition) {
-        setPreviewImageData(prev => prev ? { ...prev, x: mouseCanvasPosition.x - prev.width / 2, y: mouseCanvasPosition.y - prev.height / 2 } : null);
-    }
-  }, [mouseCanvasPosition, selectedTool, previewImageData?.src]); // previewImageData.src to re-trigger if different image loaded
-
-  const handleMainAreaMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!mainCanvasAreaRef.current) return;
-    // Calculate mouse position relative to the mainCanvasAreaRef (parent of CanvasRenderer)
-    // This position is then used to get logical canvas coords if needed by CanvasRenderer
-    const areaRect = mainCanvasAreaRef.current.getBoundingClientRect();
-    const canvasEl = canvasComponentRef.current?.getCanvasElement();
-
-    if (canvasEl) {
-      const canvasRect = canvasEl.getBoundingClientRect();
-      // Mouse relative to viewport
-      const clientX = event.clientX;
-      const clientY = event.clientY;
-
-      // Check if mouse is within the canvas bounds
-      if (clientX >= canvasRect.left && clientX <= canvasRect.right &&
-          clientY >= canvasRect.top && clientY <= canvasRect.bottom) {
-        const logicalX = clientX - canvasRect.left;
-        const logicalY = clientY - canvasRect.top;
-        setMouseCanvasPosition({ x: logicalX, y: logicalY });
-      } else {
-        setMouseCanvasPosition(null);
-      }
-    } else {
-       setMouseCanvasPosition(null);
-    }
-  };
-
-  const handleMainAreaMouseLeave = () => {
-      setMouseCanvasPosition(null);
-      // If previewing an image, you might want to hide or keep it fixed
-      // For now, if mouse leaves, preview might stick to last known canvas pos or disappear if mouseCanvasPosition is null
-  };
-
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-body">
@@ -326,18 +377,14 @@ export default function CanvasCraftPage() {
         <Card className="shadow-lg rounded-lg border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 items-center">
-              
               <div className="flex items-center gap-2" title="Drawing/Text/Eraser/Image Tool">
                 <Brush className="h-6 w-6 text-primary" />
                 <Select value={selectedTool} onValueChange={(value) => {
                   setSelectedTool(value as DrawingTool);
-                  setIsTextInputVisible(false); 
-                  setCurrentEditingTextId(null);
-                  if (value === 'image') {
-                      if(!previewImageData) fileInputRef.current?.click();
-                  } else {
-                      setPreviewImageData(null); // Clear image preview if switching away
-                  }
+                  setIsTextInputVisible(false); setCurrentEditingTextId(null);
+                  if (value === 'image' && !pendingImage) { fileInputRef.current?.click(); }
+                  // If switching away from image tool with a pending image, cancel it
+                  else if (value !== 'image' && pendingImage) { handleCancelImage(); }
                 }}>
                   <SelectTrigger className="w-full sm:w-[180px]" aria-label="Select tool">
                     <SelectValue placeholder="Select tool" />
@@ -355,7 +402,6 @@ export default function CanvasCraftPage() {
                 </Select>
                  <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleImageUpload} />
               </div>
-              
               {selectedTool !== 'text' && selectedTool !== 'image' && (
                 <>
                   {selectedTool !== 'eraser' && (
@@ -364,7 +410,6 @@ export default function CanvasCraftPage() {
                       <input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} className={commonInputClass} aria-label="Select stroke color"/>
                     </div>
                   )}
-
                   {isShapeTool && (
                     <>
                     <div className="flex items-center gap-2" title="Fill Color">
@@ -377,23 +422,13 @@ export default function CanvasCraftPage() {
                       </div>
                     </>
                   )}
-                  
                   <div className="flex items-center gap-2" title={`${selectedTool === 'eraser' ? 'Eraser Size' : 'Brush/Eraser Size'}: ${strokeWidth}px`}>
                     <Paintbrush className="h-6 w-6 text-primary" />
-                    <Slider 
-                        min={1} 
-                        max={selectedTool === 'eraser' ? 100 : 50} 
-                        step={1} 
-                        value={[strokeWidth]} 
-                        onValueChange={(val) => setStrokeWidth(val[0])} 
-                        className="w-full min-w-[100px] sm:min-w-[150px]" 
-                        aria-label={`${selectedTool === 'eraser' ? 'Eraser size' : 'Brush/Eraser Size'}: ${strokeWidth}px`}
-                    />
+                    <Slider min={1} max={selectedTool === 'eraser' ? 100 : 50} step={1} value={[strokeWidth]} onValueChange={(val) => setStrokeWidth(val[0])} className="w-full min-w-[100px] sm:min-w-[150px]" aria-label={`${selectedTool === 'eraser' ? 'Eraser size' : 'Brush/Eraser Size'}: ${strokeWidth}px`} />
                     <span className="text-sm w-8 text-center select-none">{strokeWidth}</span>
                   </div>
                 </>
               )}
-
               <div className="flex items-center gap-2 sm:gap-3 md:col-start-2 lg:col-start-3 xl:col-start-auto">
                 <Button variant="outline" onClick={handleUndo} aria-label="Undo (Ctrl+Z)" title="Undo (Ctrl+Z)">
                   <Undo2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Undo</span>
@@ -402,7 +437,6 @@ export default function CanvasCraftPage() {
                   <Redo2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Redo</span>
                 </Button>
               </div>
-              
               <div className="flex items-center gap-2 sm:gap-3">
                 <Button variant="outline" onClick={handleClearCanvas} aria-label="Clear Canvas (Ctrl+Backspace)" title="Clear Canvas (Ctrl+Backspace)">
                   <Trash2 className="h-5 w-5 mr-0 sm:mr-2" /> <span className="hidden sm:inline">Clear</span>
@@ -415,24 +449,17 @@ export default function CanvasCraftPage() {
           </CardContent>
         </Card>
       </header>
-      
       {selectedTool === 'text' && (
         <aside className="p-2 sm:px-4 sm:pb-2">
           <Card className="shadow-md rounded-lg border-border">
-            <CardHeader className="p-2 pb-1 sm:p-3 sm:pb-2">
-                <CardTitle className="text-base sm:text-lg">Text Formatting</CardTitle>
-            </CardHeader>
+            <CardHeader className="p-2 pb-1 sm:p-3 sm:pb-2"><CardTitle className="text-base sm:text-lg">Text Formatting</CardTitle></CardHeader>
             <CardContent className="p-2 pt-1 sm:p-3 sm:pt-2">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 items-center">
                 <div className="flex items-center gap-2" title="Font Family">
                   <Label htmlFor="fontFamilySelect" className="text-sm">Font</Label>
                   <Select value={fontFamily} onValueChange={setFontFamily}>
-                    <SelectTrigger id="fontFamilySelect" className="w-full min-w-[120px] h-9 text-xs sm:text-sm" aria-label="Select font family">
-                      <SelectValue placeholder="Font" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {FONT_FAMILIES.map(font => <SelectItem key={font} value={font} className="text-xs sm:text-sm">{font}</SelectItem>)}
-                    </SelectContent>
+                    <SelectTrigger id="fontFamilySelect" className="w-full min-w-[120px] h-9 text-xs sm:text-sm" aria-label="Select font family"><SelectValue placeholder="Font" /></SelectTrigger>
+                    <SelectContent>{FONT_FAMILIES.map(font => <SelectItem key={font} value={font} className="text-xs sm:text-sm">{font}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="flex items-center gap-2" title="Font Size">
@@ -464,58 +491,112 @@ export default function CanvasCraftPage() {
           </Card>
         </aside>
       )}
-      {selectedTool === 'image' && !previewImageData && (
+      {selectedTool === 'image' && (
          <aside className="p-2 sm:px-4 sm:pb-2">
             <Card className="shadow-md rounded-lg border-border">
+                 <CardHeader className="p-2 pb-1 sm:p-3 sm:pb-2"><CardTitle className="text-base sm:text-lg">Image Options</CardTitle></CardHeader>
                  <CardContent className="p-3 text-center">
-                    <p className="text-sm text-muted-foreground">Select an image to place on the canvas.</p>
-                    <Button onClick={() => fileInputRef.current?.click()} className="mt-2">Upload Image</Button>
+                    {!pendingImage ? (
+                        <>
+                            <p className="text-sm text-muted-foreground">Select an image to place on the canvas.</p>
+                            <Button onClick={() => fileInputRef.current?.click()} className="mt-2">Upload Image</Button>
+                        </>
+                    ) : (
+                        <div className="flex flex-col items-center gap-4">
+                            <p className="text-sm text-muted-foreground">Click and drag image to move. Use handles to resize.</p>
+                             <div className="flex gap-2 items-center">
+                                <Label htmlFor="imgWidth" className="text-sm">W:</Label>
+                                <Input id="imgWidth" type="number" value={Math.round(pendingImage.currentWidth)} 
+                                       onChange={(e) => {
+                                           const newWidth = parseInt(e.target.value, 10);
+                                           if (!isNaN(newWidth) && newWidth > 0) {
+                                               setPendingImage(p => p ? {...p, currentWidth: newWidth, currentHeight: newWidth / p.aspectRatio} : null);
+                                           }
+                                       }}
+                                       className="w-20 h-9 text-xs" 
+                                />
+                                <Label htmlFor="imgHeight" className="text-sm">H:</Label>
+                                <Input id="imgHeight" type="number" value={Math.round(pendingImage.currentHeight)} 
+                                       onChange={(e) => {
+                                            const newHeight = parseInt(e.target.value, 10);
+                                            if (!isNaN(newHeight) && newHeight > 0) {
+                                                setPendingImage(p => p ? {...p, currentHeight: newHeight, currentWidth: newHeight * p.aspectRatio} : null);
+                                            }
+                                       }}
+                                       className="w-20 h-9 text-xs"
+                                />
+                            </div>
+                            <div className="flex gap-2">
+                                <Button onClick={handlePlaceImage} variant="default">Place Image</Button>
+                                <Button onClick={handleCancelImage} variant="outline">Cancel</Button>
+                            </div>
+                        </div>
+                    )}
                  </CardContent>
             </Card>
         </aside>
       )}
-
-
-      <main 
-        ref={mainCanvasAreaRef}
-        className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-0 p-0 overflow-hidden relative"
-        onMouseMove={handleMainAreaMouseMove}
-        onMouseLeave={handleMainAreaMouseLeave}
-      >
-        <div 
-          className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
-          onClick={(selectedTool === 'text' || (selectedTool === 'image' && previewImageData)) ? handleCanvasInteraction : undefined} 
+      <main ref={mainCanvasAreaRef} className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-0 p-0 overflow-hidden relative">
+        <div className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
+          onClick={ selectedTool === 'text' ? handleCanvasInteraction : undefined}
         >
            <CanvasRenderer
             ref={canvasComponentRef}
             tool={selectedTool}
             strokeColor={strokeColor}
-            strokeWidth={strokeWidth} 
+            strokeWidth={strokeWidth}
             fillColor={fillColor}
             isFillEnabled={isFillEnabled}
             currentEditingTextId={currentEditingTextId}
-            previewImage={previewImageData}
-            onTextDragEnd={(id, x, y, textElement) => { 
+            onTextDragEnd={(id, x, y, textElement) => {
                 if (textElement) {
                     const updatedData: TextElementData = { ...textElement, x, y };
                     canvasComponentRef.current?.updateTextElement(id, updatedData);
-                    setCurrentEditingTextId(id); 
-                    loadTextElementForEditing(id);
+                    setCurrentEditingTextId(id); loadTextElementForEditing(id);
                 }
             }}
-             onTextSelect={(id) => { 
-                setSelectedTool('text'); 
-                loadTextElementForEditing(id);
-             }}
+            onTextSelect={(id) => { setSelectedTool('text'); loadTextElementForEditing(id); }}
           />
         </div>
+        {pendingImage && pendingImage.isVisible && (
+            <div
+                ref={imagePreviewDivRef}
+                className="absolute border-2 border-dashed border-primary cursor-move select-none"
+                style={{
+                    left: `${pendingImage.currentX}px`,
+                    top: `${pendingImage.currentY}px`,
+                    width: `${pendingImage.currentWidth}px`,
+                    height: `${pendingImage.currentHeight}px`,
+                    touchAction: 'none', // Important for preventing default touch behaviors like scrolling
+                }}
+                onMouseDown={(e) => onImagePreviewMouseDown(e, 'move')}
+            >
+                <img src={pendingImage.src} alt="Preview" className="w-full h-full object-contain pointer-events-none" />
+                <div // Bottom-right resize handle
+                    className="absolute -bottom-2 -right-2 w-4 h-4 bg-primary rounded-full cursor-se-resize border-2 border-background shadow-md"
+                    onMouseDown={(e) => onImagePreviewMouseDown(e, 'resize-br')}
+                    onTouchStart={(e) => { // Basic touch support for resize handle
+                        e.stopPropagation();
+                        if (!pendingImage || !mainCanvasAreaRef.current) return;
+                        const touch = e.touches[0];
+                        const mainRect = mainCanvasAreaRef.current.getBoundingClientRect();
+                        setImageDragState({
+                            active: true, type: 'resize-br',
+                            startMouseX: touch.clientX - mainRect.left,
+                            startMouseY: touch.clientY - mainRect.top,
+                            initialElementX: pendingImage.currentX, initialElementY: pendingImage.currentY,
+                            initialElementWidth: pendingImage.currentWidth, initialElementHeight: pendingImage.currentHeight,
+                        });
+                    }}
+                />
+                 {/* TODO: Add other resize handles (tl, tr, bl, sides) here */}
+            </div>
+        )}
         {isTextInputVisible && textInputCoords && (
           <Input
-            ref={textInputRef}
-            type="text"
-            value={textInputValue}
+            ref={textInputRef} type="text" value={textInputValue}
             onChange={(e) => setTextInputValue(e.target.value)}
-            onBlur={handleTextInputCommit} 
+            onBlur={handleTextInputCommit}
             className="absolute z-10 bg-background border border-primary shadow-lg p-2 rounded-md text-sm"
             style={getTextInputStyle()}
             placeholder="Type text here..."
