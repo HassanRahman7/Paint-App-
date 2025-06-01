@@ -20,7 +20,41 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
     const contextRef = useRef<CanvasRenderingContext2D | null>(null);
     const [isDrawing, setIsDrawing] = useState(false);
     const lastPositionRef = useRef<{ x: number; y: number } | null>(null);
-    const containerRef = useRef<HTMLDivElement>(null); // Ref for the direct parent div
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    const getCoordinates = useCallback((event: MouseEvent | TouchEvent): { x: number; y: number } | null => {
+      if (!canvasRef.current) return null;
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+
+      let clientX, clientY;
+      if (event instanceof MouseEvent) {
+        clientX = event.clientX;
+        clientY = event.clientY;
+      } else if (event instanceof TouchEvent) {
+        if (event.touches && event.touches.length > 0) {
+          clientX = event.touches[0].clientX;
+          clientY = event.touches[0].clientY;
+        } else if (event.changedTouches && event.changedTouches.length > 0) {
+          // Used for touchend/touchcancel if coords were needed there
+          clientX = event.changedTouches[0].clientX;
+          clientY = event.changedTouches[0].clientY;
+        } else {
+          return null;
+        }
+      } else {
+        return null;
+      }
+      
+      if (clientX === undefined || clientY === undefined) {
+        return null;
+      }
+
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top,
+      };
+    }, []); // canvasRef is stable, so empty dependency array is fine.
 
     const initializeCanvas = useCallback(() => {
       const canvas = canvasRef.current;
@@ -40,27 +74,24 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       context.scale(dpr, dpr);
       context.lineCap = 'round';
       context.lineJoin = 'round';
-      // Set initial brush properties after context is (re)created
       context.strokeStyle = brushColor;
       context.lineWidth = brushSize;
       contextRef.current = context;
-    }, [brushColor, brushSize]); // Add brushColor and brushSize dependencies
-    
-    useEffect(() => {
-      initializeCanvas(); // Initial setup
+    }, [brushColor, brushSize]); // Keep brushColor, brushSize for initial setup and if they cause re-init
 
-      const canvasElement = containerRef.current; // Observe the parent div
-      if (!canvasElement) return;
+    useEffect(() => {
+      initializeCanvas();
+
+      const resizeTargetElement = containerRef.current;
+      if (!resizeTargetElement) return;
 
       const resizeObserver = new ResizeObserver(() => {
-        // Preserve drawing would require more complex logic (e.g., redrawing from stored paths or offscreen canvas)
-        // For now, resize clears the canvas as new width/height are set.
-        initializeCanvas(); 
+        initializeCanvas();
       });
-      resizeObserver.observe(canvasElement);
+      resizeObserver.observe(resizeTargetElement);
 
       return () => {
-        resizeObserver.unobserve(canvasElement);
+        resizeObserver.unobserve(resizeTargetElement);
       };
     }, [initializeCanvas]);
 
@@ -71,46 +102,28 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       }
     }, [brushColor, brushSize]);
 
-    const getCoordinates = (event: MouseEvent | TouchEvent): { x: number; y: number } | null => {
-      if (!canvasRef.current) return null;
-      const canvas = canvasRef.current;
-      const rect = canvas.getBoundingClientRect();
-
-      let clientX, clientY;
-      if (event instanceof MouseEvent) {
-        clientX = event.clientX;
-        clientY = event.clientY;
-      } else if (event.touches && event.touches.length > 0) {
-        clientX = event.touches[0].clientX;
-        clientY = event.touches[0].clientY;
-      } else if (event instanceof TouchEvent && event.changedTouches && event.changedTouches.length > 0) {
-        // Handle touchend/touchcancel if needed, though stopDrawing doesn't use coords
-        clientX = event.changedTouches[0].clientX;
-        clientY = event.changedTouches[0].clientY;
+    const startDrawing = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+      if (event.nativeEvent instanceof TouchEvent) {
+        event.preventDefault();
       }
-      else {
-        return null;
-      }
-      return {
-        x: clientX - rect.left,
-        y: clientY - rect.top,
-      };
-    };
-
-    const startDrawing = useCallback((event: MouseEvent | TouchEvent) => {
-      const coords = getCoordinates(event);
+      const nativeEvent = event.nativeEvent;
+      const coords = getCoordinates(nativeEvent);
       if (!coords || !contextRef.current) return;
       
       setIsDrawing(true);
       contextRef.current.beginPath();
       contextRef.current.moveTo(coords.x, coords.y);
       lastPositionRef.current = coords;
-      if (event instanceof TouchEvent) event.preventDefault();
-    }, []);
+    }, [getCoordinates]);
 
-    const draw = useCallback((event: MouseEvent | TouchEvent) => {
+    const draw = useCallback((event: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
       if (!isDrawing || !contextRef.current) return;
-      const coords = getCoordinates(event);
+      
+      if (event.nativeEvent instanceof TouchEvent) {
+        event.preventDefault();
+      }
+      const nativeEvent = event.nativeEvent;
+      const coords = getCoordinates(nativeEvent);
       if (!coords) return;
 
       if (lastPositionRef.current) {
@@ -118,12 +131,11 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
          contextRef.current.stroke();
       }
       lastPositionRef.current = coords;
-      if (event instanceof TouchEvent) event.preventDefault();
-    }, [isDrawing]);
+    }, [isDrawing, getCoordinates]);
 
     const stopDrawing = useCallback(() => {
-      if (!contextRef.current || !isDrawing) return; // Only stop if currently drawing
-      contextRef.current.closePath();
+      if (!contextRef.current || !isDrawing) return;
+      // contextRef.current.closePath(); // Removed for typical freehand drawing
       setIsDrawing(false);
       lastPositionRef.current = null;
     }, [isDrawing]);
@@ -132,7 +144,7 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       clearCanvas: () => {
         if (contextRef.current && canvasRef.current) {
           const canvas = canvasRef.current;
-          const dpr = window.devicePixelRatio || 1;
+          const dpr = window.devicePixelRatio || 1; // Use DPR for clearing
           contextRef.current.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
         }
       },
@@ -153,12 +165,12 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
       <div ref={containerRef} className="w-full h-full touch-none">
         <canvas
           ref={canvasRef}
-          onMouseDown={startDrawing as unknown as React.MouseEventHandler<HTMLCanvasElement>}
-          onMouseMove={draw as unknown as React.MouseEventHandler<HTMLCanvasElement>}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
           onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing} // Stop drawing if mouse leaves canvas
-          onTouchStart={startDrawing as unknown as React.TouchEventHandler<HTMLCanvasElement>}
-          onTouchMove={draw as unknown as React.TouchEventHandler<HTMLCanvasElement>}
+          onMouseLeave={stopDrawing}
+          onTouchStart={startDrawing}
+          onTouchMove={draw}
   	      onTouchEnd={stopDrawing}
           className="w-full h-full cursor-crosshair"
           data-ai-hint="drawing abstract"
@@ -170,3 +182,4 @@ const CanvasRenderer = forwardRef<CanvasRendererHandle, CanvasRendererProps>(
 
 CanvasRenderer.displayName = 'CanvasRenderer';
 export default CanvasRenderer;
+
