@@ -9,8 +9,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Eraser } from 'lucide-react';
-import CanvasRenderer, { type CanvasRendererHandle, type DrawingTool, type TextElementData } from '@/components/canvas-renderer';
+import { Palette, Paintbrush, Trash2, Download, Undo2, Redo2, PaintBucket, Minus, RectangleHorizontal, Circle as CircleIcon, Triangle as TriangleIcon, Brush, Type, AlignLeft, AlignCenter, AlignRight, Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Eraser, ImagePlus } from 'lucide-react';
+import CanvasRenderer, { type CanvasRendererHandle, type DrawingTool, type TextElementData, type ImageActionData } from '@/components/canvas-renderer';
 import { cn } from '@/lib/utils';
 
 const FONT_FAMILIES = ['Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New', 'Comic Sans MS', 'Impact', 'Lucida Console'];
@@ -18,11 +18,10 @@ const FONT_FAMILIES = ['Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courie
 export default function CanvasCraftPage() {
   const [strokeColor, setStrokeColor] = useState<string>('#000000');
   const [fillColor, setFillColor] = useState<string>('#79B4B7');
-  const [strokeWidth, setStrokeWidth] = useState<number>(5); // Also eraser size
+  const [strokeWidth, setStrokeWidth] = useState<number>(5); 
   const [selectedTool, setSelectedTool] = useState<DrawingTool>('freehand');
   const [isFillEnabled, setIsFillEnabled] = useState<boolean>(true);
 
-  // Text tool state
   const [fontFamily, setFontFamily] = useState<string>('Arial');
   const [fontSize, setFontSize] = useState<number>(24);
   const [textColor, setTextColor] = useState<string>('#000000');
@@ -33,17 +32,24 @@ export default function CanvasCraftPage() {
 
   const [isTextInputVisible, setIsTextInputVisible] = useState<boolean>(false);
   const [textInputValue, setTextInputValue] = useState<string>('');
-  const [textInputCoords, setTextInputCoords] = useState<{ x: number; y: number } | null>(null); // Canvas logical coords
+  const [textInputCoords, setTextInputCoords] = useState<{ x: number; y: number } | null>(null);
   const [currentEditingTextId, setCurrentEditingTextId] = useState<string | null>(null);
+
+  const [previewImageData, setPreviewImageData] = useState<{ src: string; x: number; y: number; width: number; height: number} | null>(null);
+  const [mouseCanvasPosition, setMouseCanvasPosition] = useState<{x: number; y: number} | null>(null);
+
 
   const canvasComponentRef = useRef<CanvasRendererHandle>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const mainCanvasAreaRef = useRef<HTMLDivElement>(null);
 
 
   const handleClearCanvas = useCallback(() => {
     canvasComponentRef.current?.clearCanvas();
     setCurrentEditingTextId(null);
     setIsTextInputVisible(false);
+    setPreviewImageData(null);
   }, []);
 
   const handleDownloadDrawing = useCallback(() => {
@@ -52,15 +58,13 @@ export default function CanvasCraftPage() {
 
   const handleUndo = useCallback(() => {
     canvasComponentRef.current?.undo();
-    // If an undo deselects text or removes the currently edited one, hide input
     const potentiallyDeselectedId = currentEditingTextId; 
     setCurrentEditingTextId(null); 
     setIsTextInputVisible(false);
-    // Check if the element still exists after undo
+    setPreviewImageData(null);
     if (potentiallyDeselectedId) {
         canvasComponentRef.current?.getTextElementById(potentiallyDeselectedId).then(el => {
             if(!el) {
-                // Element was removed by undo
             }
         });
     }
@@ -70,6 +74,7 @@ export default function CanvasCraftPage() {
     canvasComponentRef.current?.redo();
     setCurrentEditingTextId(null);
     setIsTextInputVisible(false);
+    setPreviewImageData(null);
   }, []);
 
   useEffect(() => {
@@ -90,7 +95,6 @@ export default function CanvasCraftPage() {
       setIsTextItalic(element.isItalic);
       setIsTextUnderline(element.isUnderline);
       setCurrentEditingTextId(textId);
-      // Position input based on element's logical coords
       setTextInputCoords({x: element.x, y: element.y}); 
       setIsTextInputVisible(true);
     }
@@ -98,6 +102,25 @@ export default function CanvasCraftPage() {
 
 
   const handleCanvasInteraction = useCallback(async (event: React.MouseEvent<HTMLDivElement>) => {
+    if (selectedTool === 'image' && previewImageData && canvasComponentRef.current) {
+        const canvasEl = canvasComponentRef.current.getCanvasElement();
+        if (!canvasEl) return;
+        const rect = canvasEl.getBoundingClientRect();
+        const logicalX = event.clientX - rect.left;
+        const logicalY = event.clientY - rect.top;
+
+        canvasComponentRef.current.addImageElement({
+            id: `image-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            src: previewImageData.src,
+            x: logicalX - previewImageData.width / 2, // Center image on click
+            y: logicalY - previewImageData.height / 2,
+            width: previewImageData.width,
+            height: previewImageData.height,
+        });
+        setPreviewImageData(null); 
+        return; 
+    }
+
     if (selectedTool !== 'text' || !canvasComponentRef.current) {
       setIsTextInputVisible(false); 
       setCurrentEditingTextId(null);
@@ -107,7 +130,6 @@ export default function CanvasCraftPage() {
     const canvasEl = canvasComponentRef.current.getCanvasElement();
     if (!canvasEl) return;
     const rect = canvasEl.getBoundingClientRect();
-    // Get logical coordinates relative to the canvas
     const logicalX = event.clientX - rect.left;
     const logicalY = event.clientY - rect.top;
 
@@ -118,10 +140,10 @@ export default function CanvasCraftPage() {
     } else {
       setCurrentEditingTextId(null);
       setTextInputValue(''); 
-      setTextInputCoords({ x: logicalX, y: logicalY }); // Store logical coords for new text
+      setTextInputCoords({ x: logicalX, y: logicalY }); 
       setIsTextInputVisible(true);
     }
-  }, [selectedTool, loadTextElementForEditing]);
+  }, [selectedTool, loadTextElementForEditing, previewImageData]);
 
 
   const handleTextInputCommit = useCallback(() => {
@@ -133,8 +155,8 @@ export default function CanvasCraftPage() {
 
     const textData: Omit<TextElementData, 'id' | 'measuredWidth' | 'measuredHeight'> = {
       text: textInputValue,
-      x: textInputCoords.x, // Use stored logical coords
-      y: textInputCoords.y, // Use stored logical coords
+      x: textInputCoords.x, 
+      y: textInputCoords.y, 
       fontFamily,
       fontSize,
       textColor,
@@ -161,14 +183,12 @@ export default function CanvasCraftPage() {
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId]);
 
   useEffect(() => {
-    // This effect updates formatting of an existing, selected text element
-    // when formatting controls are changed AND the text input is NOT visible (meaning editing is via controls, not typing)
     if (currentEditingTextId && !isTextInputVisible) { 
       const updateFormatting = async () => {
         const currentElement = await canvasComponentRef.current?.getTextElementById(currentEditingTextId);
         if (currentElement) {
           const updatedData: TextElementData = {
-            ...currentElement, // Keep existing text and position
+            ...currentElement, 
             fontFamily,
             fontSize,
             textColor,
@@ -201,14 +221,17 @@ export default function CanvasCraftPage() {
           event.preventDefault();
           setIsTextInputVisible(false);
           setTextInputValue('');
-          setCurrentEditingTextId(null); // Deselect text on escape
+          setCurrentEditingTextId(null); 
         }
+      } else if (selectedTool === 'image' && previewImageData && event.key === 'Escape') {
+          event.preventDefault();
+          setPreviewImageData(null);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleClearCanvas, handleDownloadDrawing, handleUndo, handleRedo, isTextInputVisible, handleTextInputCommit]);
+  }, [handleClearCanvas, handleDownloadDrawing, handleUndo, handleRedo, isTextInputVisible, handleTextInputCommit, selectedTool, previewImageData]);
 
   const commonInputClass = "w-10 h-10 p-0 bg-transparent border border-input rounded-md cursor-pointer appearance-none [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-md [&::-webkit-color-swatch]:border-none";
   const isShapeTool = ['rectangle', 'circle', 'triangle'].includes(selectedTool);
@@ -219,7 +242,6 @@ export default function CanvasCraftPage() {
     if (!canvasEl) return { display: 'none' };
 
     const canvasRect = canvasEl.getBoundingClientRect();
-    // textInputCoords are logical canvas coordinates. Add canvas offset to get screen coordinates.
     const screenX = textInputCoords.x + canvasRect.left;
     const screenY = textInputCoords.y + canvasRect.top;
     
@@ -231,6 +253,72 @@ export default function CanvasCraftPage() {
     };
   };
 
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const src = e.target?.result as string;
+            if (src) {
+                const img = new Image();
+                img.onload = () => {
+                    setPreviewImageData({
+                        src,
+                        x: mouseCanvasPosition?.x ? mouseCanvasPosition.x - img.naturalWidth / 2 : 0,
+                        y: mouseCanvasPosition?.y ? mouseCanvasPosition.y - img.naturalHeight / 2 : 0,
+                        width: img.naturalWidth, 
+                        height: img.naturalHeight,
+                    });
+                };
+                img.src = src;
+            }
+        };
+        reader.readAsDataURL(file);
+    }
+    if (event.target) {
+        event.target.value = ""; // Reset file input
+    }
+  };
+
+  useEffect(() => {
+    if (selectedTool === 'image' && previewImageData && mouseCanvasPosition) {
+        setPreviewImageData(prev => prev ? { ...prev, x: mouseCanvasPosition.x - prev.width / 2, y: mouseCanvasPosition.y - prev.height / 2 } : null);
+    }
+  }, [mouseCanvasPosition, selectedTool, previewImageData?.src]); // previewImageData.src to re-trigger if different image loaded
+
+  const handleMainAreaMouseMove = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!mainCanvasAreaRef.current) return;
+    // Calculate mouse position relative to the mainCanvasAreaRef (parent of CanvasRenderer)
+    // This position is then used to get logical canvas coords if needed by CanvasRenderer
+    const areaRect = mainCanvasAreaRef.current.getBoundingClientRect();
+    const canvasEl = canvasComponentRef.current?.getCanvasElement();
+
+    if (canvasEl) {
+      const canvasRect = canvasEl.getBoundingClientRect();
+      // Mouse relative to viewport
+      const clientX = event.clientX;
+      const clientY = event.clientY;
+
+      // Check if mouse is within the canvas bounds
+      if (clientX >= canvasRect.left && clientX <= canvasRect.right &&
+          clientY >= canvasRect.top && clientY <= canvasRect.bottom) {
+        const logicalX = clientX - canvasRect.left;
+        const logicalY = clientY - canvasRect.top;
+        setMouseCanvasPosition({ x: logicalX, y: logicalY });
+      } else {
+        setMouseCanvasPosition(null);
+      }
+    } else {
+       setMouseCanvasPosition(null);
+    }
+  };
+
+  const handleMainAreaMouseLeave = () => {
+      setMouseCanvasPosition(null);
+      // If previewing an image, you might want to hide or keep it fixed
+      // For now, if mouse leaves, preview might stick to last known canvas pos or disappear if mouseCanvasPosition is null
+  };
+
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground font-body">
@@ -239,12 +327,17 @@ export default function CanvasCraftPage() {
           <CardContent className="p-3 sm:p-4">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 items-center">
               
-              <div className="flex items-center gap-2" title="Drawing/Text/Eraser Tool">
+              <div className="flex items-center gap-2" title="Drawing/Text/Eraser/Image Tool">
                 <Brush className="h-6 w-6 text-primary" />
                 <Select value={selectedTool} onValueChange={(value) => {
                   setSelectedTool(value as DrawingTool);
                   setIsTextInputVisible(false); 
                   setCurrentEditingTextId(null);
+                  if (value === 'image') {
+                      if(!previewImageData) fileInputRef.current?.click();
+                  } else {
+                      setPreviewImageData(null); // Clear image preview if switching away
+                  }
                 }}>
                   <SelectTrigger className="w-full sm:w-[180px]" aria-label="Select tool">
                     <SelectValue placeholder="Select tool" />
@@ -257,11 +350,13 @@ export default function CanvasCraftPage() {
                     <SelectItem value="triangle"><div className="flex items-center gap-2"><TriangleIcon className="h-4 w-4" /> Triangle</div></SelectItem>
                     <SelectItem value="text"><div className="flex items-center gap-2"><Type className="h-4 w-4" /> Text</div></SelectItem>
                     <SelectItem value="eraser"><div className="flex items-center gap-2"><Eraser className="h-4 w-4" /> Eraser</div></SelectItem>
+                    <SelectItem value="image"><div className="flex items-center gap-2"><ImagePlus className="h-4 w-4" /> Image</div></SelectItem>
                   </SelectContent>
                 </Select>
+                 <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleImageUpload} />
               </div>
               
-              {selectedTool !== 'text' && (
+              {selectedTool !== 'text' && selectedTool !== 'image' && (
                 <>
                   {selectedTool !== 'eraser' && (
                     <div className="flex items-center gap-2" title="Stroke Color">
@@ -369,11 +464,27 @@ export default function CanvasCraftPage() {
           </Card>
         </aside>
       )}
+      {selectedTool === 'image' && !previewImageData && (
+         <aside className="p-2 sm:px-4 sm:pb-2">
+            <Card className="shadow-md rounded-lg border-border">
+                 <CardContent className="p-3 text-center">
+                    <p className="text-sm text-muted-foreground">Select an image to place on the canvas.</p>
+                    <Button onClick={() => fileInputRef.current?.click()} className="mt-2">Upload Image</Button>
+                 </CardContent>
+            </Card>
+        </aside>
+      )}
 
-      <main className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-0 p-0 overflow-hidden relative">
+
+      <main 
+        ref={mainCanvasAreaRef}
+        className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-0 p-0 overflow-hidden relative"
+        onMouseMove={handleMainAreaMouseMove}
+        onMouseLeave={handleMainAreaMouseLeave}
+      >
         <div 
           className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
-          onClick={selectedTool === 'text' ? handleCanvasInteraction : undefined} // Only use custom click for text tool
+          onClick={(selectedTool === 'text' || (selectedTool === 'image' && previewImageData)) ? handleCanvasInteraction : undefined} 
         >
            <CanvasRenderer
             ref={canvasComponentRef}
@@ -383,6 +494,7 @@ export default function CanvasCraftPage() {
             fillColor={fillColor}
             isFillEnabled={isFillEnabled}
             currentEditingTextId={currentEditingTextId}
+            previewImage={previewImageData}
             onTextDragEnd={(id, x, y, textElement) => { 
                 if (textElement) {
                     const updatedData: TextElementData = { ...textElement, x, y };
@@ -392,7 +504,7 @@ export default function CanvasCraftPage() {
                 }
             }}
              onTextSelect={(id) => { 
-                setSelectedTool('text'); // Switch to text tool if not already
+                setSelectedTool('text'); 
                 loadTextElementForEditing(id);
              }}
           />
@@ -403,7 +515,7 @@ export default function CanvasCraftPage() {
             type="text"
             value={textInputValue}
             onChange={(e) => setTextInputValue(e.target.value)}
-            onBlur={handleTextInputCommit} // Commit on blur
+            onBlur={handleTextInputCommit} 
             className="absolute z-10 bg-background border border-primary shadow-lg p-2 rounded-md text-sm"
             style={getTextInputStyle()}
             placeholder="Type text here..."
