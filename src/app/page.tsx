@@ -2,7 +2,7 @@
 "use client";
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import type { CanvasSheet, DrawingAction, DrawingTool, TextElementData, ImageActionData, Point } from '@/lib/types';
+import type { CanvasSheet, DrawingAction, DrawingTool, TextElementData, ImageActionData, Point, ShapeAction, TextAction } from '@/lib/types';
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,6 +75,7 @@ export default function CanvasCraftPage() {
   const [textInputValue, setTextInputValue] = useState<string>('');
   const [textInputCoords, setTextInputCoords] = useState<Point | null>(null);
   const [currentEditingTextId, setCurrentEditingTextId] = useState<string | null>(null);
+  const [selectedShapeId, setSelectedShapeId] = useState<string | null>(null);
 
   const [pendingImage, setPendingImage] = useState<PendingImageState | null>(null);
   const [imageDragState, setImageDragState] = useState<ImageDragInteractionState>({
@@ -92,28 +93,42 @@ export default function CanvasCraftPage() {
   const activeSheet = sheets.find(s => s.id === activeSheetId) || sheets[0];
 
   const updateSheetHistory = (sheetId: string, newHistory: DrawingAction[], newIndex: number) => {
-    setSheets(prevSheets => prevSheets.map(s => 
+    setSheets(prevSheets => prevSheets.map(s =>
       s.id === sheetId ? { ...s, drawingHistory: newHistory, historyIndex: newIndex } : s
     ));
   };
 
-  const handleCommitAction = (actionData: Omit<DrawingAction, 'id' | 'visible'>) => {
+  const handleCommitAction = useCallback((actionData: Omit<DrawingAction, 'id' | 'visible'>) => {
+    const newActionId = actionData.type === 'text' && (actionData.data as TextElementData).id ? (actionData.data as TextElementData).id
+                       : actionData.type === 'image' && (actionData.data as ImageActionData).id ? (actionData.data as ImageActionData).id
+                       : (selectedShapeId && (actionData.type === 'rectangle' || actionData.type === 'circle' || actionData.type === 'triangle')) ? selectedShapeId // reuse ID for shape updates
+                       : `action-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
     const newAction: DrawingAction = {
       ...actionData,
-      id: `action-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: newActionId,
       visible: true,
-    } as DrawingAction; // Added type assertion
+    } as DrawingAction;
 
     const currentHistory = activeSheet.drawingHistory.slice(0, activeSheet.historyIndex + 1);
     const newHistory = [...currentHistory, newAction];
     updateSheetHistory(activeSheetId, newHistory, newHistory.length - 1);
-    setCurrentEditingTextId(null); // Deselect text after committing
-  };
+    
+    if (actionData.type !== 'text' || (actionData.data as TextElementData).id !== currentEditingTextId) {
+        setCurrentEditingTextId(null);
+    }
+    // Keep selectedShapeId if the action was an update to that shape
+    if (newAction.id !== selectedShapeId && actionData.type !== 'text') {
+        setSelectedShapeId(null);
+    }
+
+  }, [activeSheet.drawingHistory, activeSheet.historyIndex, activeSheetId, currentEditingTextId, selectedShapeId]);
 
 
   const handleClearCanvas = useCallback(() => {
     updateSheetHistory(activeSheetId, [], -1);
     setCurrentEditingTextId(null);
+    setSelectedShapeId(null);
     setIsTextInputVisible(false);
     setPendingImage(null);
   }, [activeSheetId]);
@@ -126,6 +141,7 @@ export default function CanvasCraftPage() {
     if (activeSheet.historyIndex >= 0) {
       updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex - 1);
       setCurrentEditingTextId(null);
+      setSelectedShapeId(null);
       setIsTextInputVisible(false);
     }
   }, [activeSheet, activeSheetId]);
@@ -134,6 +150,7 @@ export default function CanvasCraftPage() {
     if (activeSheet.historyIndex < activeSheet.drawingHistory.length - 1) {
       updateSheetHistory(activeSheetId, activeSheet.drawingHistory, activeSheet.historyIndex + 1);
       setCurrentEditingTextId(null);
+      setSelectedShapeId(null);
       setIsTextInputVisible(false);
     }
   }, [activeSheet, activeSheetId]);
@@ -146,8 +163,11 @@ export default function CanvasCraftPage() {
   }, [isTextInputVisible]);
 
   const loadTextElementForEditing = useCallback(async (textId: string) => {
-    // Text elements are now directly in sheet's history
-    const action = activeSheet.drawingHistory.find(a => a.id === textId && a.type === 'text') as TextAction | undefined;
+    const action = activeSheet.drawingHistory
+        .slice(0, activeSheet.historyIndex + 1)
+        .reverse()
+        .find(a => a.id === textId && a.type === 'text') as TextAction | undefined;
+
     if (action && action.data) {
       const element = action.data;
       setTextInputValue(element.text);
@@ -158,17 +178,18 @@ export default function CanvasCraftPage() {
       setIsTextBold(element.isBold);
       setIsTextItalic(element.isItalic);
       setIsTextUnderline(element.isUnderline);
-      setCurrentEditingTextId(textId); // This should be action.id
+      setCurrentEditingTextId(textId);
+      setSelectedShapeId(null);
       setTextInputCoords({x: element.x, y: element.y});
       setIsTextInputVisible(true);
     }
-  }, [activeSheet.drawingHistory]);
+  }, [activeSheet.drawingHistory, activeSheet.historyIndex]);
 
   const handleCanvasInteraction = useCallback(async (event: React.MouseEvent<HTMLDivElement>) => {
     if (selectedTool === 'image' && pendingImage) return;
     if (selectedTool !== 'text' || !canvasComponentRef.current) {
       setIsTextInputVisible(false);
-      setCurrentEditingTextId(null);
+      // setCurrentEditingTextId(null); // Don't deselect text if clicking outside while text tool is active
       return;
     }
 
@@ -183,8 +204,10 @@ export default function CanvasCraftPage() {
     if (clickedTextId) {
       await loadTextElementForEditing(clickedTextId);
     } else {
-      setCurrentEditingTextId(null);
-      setTextInputValue('');
+      // If not clicking on existing text, place new text input
+      setCurrentEditingTextId(null); // Deselect any currently editing text
+      setSelectedShapeId(null); // Deselect any shape
+      setTextInputValue(''); // Clear input for new text
       setTextInputCoords({ x: logicalX, y: logicalY });
       setIsTextInputVisible(true);
     }
@@ -197,51 +220,77 @@ export default function CanvasCraftPage() {
       setTextInputValue('');
       return;
     }
-    
-    const tempId = `text-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    // Temporarily create TextElementData to pass to onCommitAction
-    // CanvasRenderer's context will be used to calculate measuredWidth/Height if needed before actual drawing.
-    // For now, we pass 0s and let the renderer handle it.
+
     const textDataForAction: TextElementData = {
-      id: currentEditingTextId || tempId, // Use existing ID if editing
+      id: currentEditingTextId || `text-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       text: textInputValue,
       x: textInputCoords.x, y: textInputCoords.y, fontFamily, fontSize, textColor,
       textAlign, isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline,
-      measuredWidth: 0, measuredHeight: 0, // Will be calculated by renderer
+      measuredWidth: 0, measuredHeight: 0,
     };
 
     handleCommitAction({
       type: 'text',
       data: textDataForAction,
     });
-    
+
     setIsTextInputVisible(false);
     setTextInputValue('');
-    // currentEditingTextId is cleared by handleCommitAction
+    // currentEditingTextId is cleared in handleCommitAction if it wasn't this text item
   }, [textInputValue, textInputCoords, fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId, handleCommitAction]);
 
-  // Update existing text element formatting when not in input mode
+  // Update existing text element formatting when not in input mode OR selected shape properties
   useEffect(() => {
-    if (currentEditingTextId && !isTextInputVisible) {
-        const actionIndex = activeSheet.drawingHistory.findIndex(a => a.id === currentEditingTextId && a.type === 'text');
-        if (actionIndex > -1) {
-            const currentAction = activeSheet.drawingHistory[actionIndex] as TextAction;
+    const isTextToolActive = selectedTool === 'text';
+    
+    if (currentEditingTextId && isTextToolActive && !isTextInputVisible) {
+        // Find the latest action for the currentEditingTextId
+        const latestAction = activeSheet.drawingHistory
+            .slice(0, activeSheet.historyIndex + 1)
+            .reverse()
+            .find(a => a.id === currentEditingTextId && a.type === 'text') as TextAction | undefined;
+
+        if (latestAction) {
             const updatedTextData: TextElementData = {
-                ...currentAction.data,
+                ...latestAction.data,
                 fontFamily, fontSize, textColor, textAlign,
                 isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline,
             };
-            // Create a new action for the update
-             handleCommitAction({
-                type: 'text',
-                data: updatedTextData, // This action should effectively replace/update the one with currentEditingTextId
-            });
-             // Note: A true "update in place" for history is complex.
-             // Committing a new action with the same ID (but new content/style) is simpler for undo/redo,
-             // and renderer logic will pick the latest version of an ID for drawing.
+            handleCommitAction({ type: 'text', data: updatedTextData });
+        }
+    } else if (selectedShapeId && !isTextToolActive) {
+        // Find the latest action for the selectedShapeId
+        const latestAction = activeSheet.drawingHistory
+            .slice(0, activeSheet.historyIndex + 1)
+            .reverse()
+            .find(a => a.id === selectedShapeId && (a.type === 'rectangle' || a.type === 'circle' || a.type === 'triangle')) as ShapeAction | undefined;
+
+        if (latestAction) {
+            // Check if any relevant property has changed
+            if (latestAction.fillColor !== fillColor ||
+                latestAction.strokeColor !== strokeColor ||
+                latestAction.strokeWidth !== strokeWidth ||
+                latestAction.isFilled !== isFillEnabled) {
+                
+                const updatedShapeActionData: Omit<ShapeAction, 'id' | 'visible'> = {
+                    type: latestAction.type,
+                    startPoint: latestAction.startPoint,
+                    endPoint: latestAction.endPoint,
+                    strokeColor: strokeColor,
+                    strokeWidth: strokeWidth,
+                    fillColor: fillColor,
+                    isFilled: isFillEnabled,
+                };
+                handleCommitAction(updatedShapeActionData);
+            }
         }
     }
-  }, [fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, currentEditingTextId, isTextInputVisible, activeSheet.drawingHistory, handleCommitAction]);
+  }, [
+    fontFamily, fontSize, textColor, textAlign, isTextBold, isTextItalic, isTextUnderline, // Text props
+    fillColor, strokeColor, strokeWidth, isFillEnabled, // Shape props
+    currentEditingTextId, selectedShapeId, isTextInputVisible, selectedTool,
+    activeSheet.drawingHistory, activeSheet.historyIndex, handleCommitAction
+  ]);
 
 
   const handlePlaceImage = () => {
@@ -257,15 +306,15 @@ export default function CanvasCraftPage() {
           height: pendingImage.currentHeight,
         }
       });
-      setPendingImage(null); 
+      setPendingImage(null);
     }
   };
 
   const handleCancelImage = () => {
     setPendingImage(null);
-    if (fileInputRef.current) fileInputRef.current.value = ""; 
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
-  
+
   useEffect(() => {
     const handleGlobalMouseMove = (event: MouseEvent) => {
       if (!imageDragState.active || !pendingImage || !mainCanvasAreaRef.current) return;
@@ -287,12 +336,12 @@ export default function CanvasCraftPage() {
       } else if (imageDragState.type === 'resize-br') {
         let newWidth = imageDragState.initialElementWidth + deltaX;
         let newHeight = imageDragState.initialElementHeight + deltaY;
-        if (newWidth / pendingImage.aspectRatio > newHeight) { 
+        if (newWidth / pendingImage.aspectRatio > newHeight) {
             newHeight = newWidth / pendingImage.aspectRatio;
-        } else { 
+        } else {
             newWidth = newHeight * pendingImage.aspectRatio;
         }
-        newWidth = Math.max(20, newWidth); 
+        newWidth = Math.max(20, newWidth);
         newHeight = Math.max(20, newHeight);
         setPendingImage(prev => prev ? { ...prev, currentWidth: newWidth, currentHeight: newHeight } : null);
       }
@@ -313,7 +362,7 @@ export default function CanvasCraftPage() {
 
   const onImagePreviewMouseDown = (event: React.MouseEvent<HTMLDivElement>, type: 'move' | 'resize-br') => {
     if (!pendingImage || !mainCanvasAreaRef.current) return;
-    event.preventDefault(); event.stopPropagation(); 
+    event.preventDefault(); event.stopPropagation();
     const mainRect = mainCanvasAreaRef.current.getBoundingClientRect();
     const startMouseX = event.clientX - mainRect.left;
     const startMouseY = event.clientY - mainRect.top;
@@ -327,21 +376,25 @@ export default function CanvasCraftPage() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const targetTagName = (event.target as HTMLElement)?.tagName;
-      const isInputFocused = targetTagName === 'INPUT' || targetTagName === 'TEXTAREA';
+      const isInputFocused = targetTagName === 'INPUT' || targetTagName === 'TEXTAREA' || targetTagName === 'SELECT';
+
 
       if ((event.ctrlKey || event.metaKey) && !isInputFocused) {
         if (event.key === 'z') { event.preventDefault(); handleUndo(); }
         else if (event.key === 'y') { event.preventDefault(); handleRedo(); }
-        else if (event.key === 'Backspace') { event.preventDefault(); handleClearCanvas(); }
+        else if (event.key === 'Backspace' && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) { event.preventDefault(); handleClearCanvas(); }
         else if (event.key === 's') { event.preventDefault(); handleDownloadDrawing(); }
       }
       if (isTextInputVisible) {
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleTextInputCommit(); }
         else if (event.key === 'Escape') {
-          event.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); setCurrentEditingTextId(null);
+          event.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); // Keep currentEditingTextId for style updates
         }
       } else if (selectedTool === 'image' && pendingImage && event.key === 'Escape') {
           event.preventDefault(); handleCancelImage();
+      } else if (!isInputFocused && event.key === 'Escape') { // Deselect shape/text on Escape
+          setCurrentEditingTextId(null);
+          setSelectedShapeId(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -356,10 +409,16 @@ export default function CanvasCraftPage() {
     const canvasEl = canvasComponentRef.current.getCanvasElement();
     if (!canvasEl) return { display: 'none' };
     const canvasRect = canvasEl.getBoundingClientRect();
+
+    // Ensure textInputCoords are scaled if canvas is scaled internally for DPR
+    // However, canvasComponentRef.current.getCanvasElement() gives the element itself,
+    // its rect.left/top are already screen coordinates.
+    // And textInputCoords should be logical canvas coordinates.
+
     const screenX = textInputCoords.x + canvasRect.left;
     const screenY = textInputCoords.y + canvasRect.top;
     return {
-      position: 'fixed' as 'fixed', // Ensure it's fixed to viewport
+      position: 'fixed' as 'fixed',
       left: `${Math.min(window.innerWidth - 200, Math.max(10, screenX))}px`,
       top: `${Math.min(window.innerHeight - 50, Math.max(10, screenY))}px`,
       minWidth: '150px', maxWidth: '300px',
@@ -376,20 +435,24 @@ export default function CanvasCraftPage() {
                 const img = new Image();
                 img.onload = () => {
                     const canvasEl = canvasComponentRef.current!.getCanvasElement()!;
-                    const canvasWidth = canvasEl.width / (window.devicePixelRatio || 1);
-                    const canvasHeight = canvasEl.height / (window.devicePixelRatio || 1);
+                    // Use logical canvas dimensions for pending image placement
+                    const logicalCanvasWidth = canvasEl.width / (window.devicePixelRatio || 1);
+                    const logicalCanvasHeight = canvasEl.height / (window.devicePixelRatio || 1);
+
                     const aspectRatio = img.naturalWidth / img.naturalHeight;
-                    let initialWidth = Math.min(img.naturalWidth, canvasWidth * 0.5);
+                    let initialWidth = Math.min(img.naturalWidth, logicalCanvasWidth * 0.5);
                     let initialHeight = initialWidth / aspectRatio;
-                    if (initialHeight > canvasHeight * 0.5) {
-                        initialHeight = canvasHeight * 0.5;
+                    if (initialHeight > logicalCanvasHeight * 0.5) {
+                        initialHeight = logicalCanvasHeight * 0.5;
                         initialWidth = initialHeight * aspectRatio;
                     }
                     setPendingImage({
                         src, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, aspectRatio,
-                        currentX: (canvasWidth - initialWidth) / 2, currentY: (canvasHeight - initialHeight) / 2,
+                        currentX: (logicalCanvasWidth - initialWidth) / 2, currentY: (logicalCanvasHeight - initialHeight) / 2,
                         currentWidth: initialWidth, currentHeight: initialHeight,
                     });
+                    setSelectedShapeId(null); // Deselect shape when new image is loaded
+                    setCurrentEditingTextId(null); // Deselect text
                 };
                 img.src = src;
             }
@@ -407,7 +470,8 @@ export default function CanvasCraftPage() {
   };
   const handleSwitchSheet = (sheetId: string) => {
     setActiveSheetId(sheetId);
-    setCurrentEditingTextId(null); // Reset editing state on sheet switch
+    setCurrentEditingTextId(null);
+    setSelectedShapeId(null);
     setIsTextInputVisible(false);
     setPendingImage(null);
   };
@@ -419,7 +483,7 @@ export default function CanvasCraftPage() {
     if (sheetToDuplicate) {
       const newSheet = createNewSheet(
         `${sheetToDuplicate.name} (Copy)`,
-        [...sheetToDuplicate.drawingHistory], // Deep copy history
+        [...sheetToDuplicate.drawingHistory],
         sheetToDuplicate.historyIndex
       );
       setSheets(prev => [...prev, newSheet]);
@@ -427,42 +491,56 @@ export default function CanvasCraftPage() {
     }
   };
   const handleDeleteSheet = (sheetId: string) => {
-    if (sheets.length <= 1) return; // Don't delete the last sheet
+    if (sheets.length <= 1) return;
     setSheets(prev => prev.filter(s => s.id !== sheetId));
-    // Switch to another sheet if the active one was deleted
     if (activeSheetId === sheetId) {
       setActiveSheetId(sheets.find(s => s.id !== sheetId)?.id || sheets[0].id);
     }
   };
-  // History Sidebar Callbacks
+
   const handleToggleHistoryVisibility = (actionId: string) => {
     const newHistory = activeSheet.drawingHistory.map(action =>
-      action.id === actionId ? { ...action, visible: !(action.visible !== false) } : action // Default visible to true if undefined
+      action.id === actionId ? { ...action, visible: !(action.visible !== false) } : action
     );
     updateSheetHistory(activeSheetId, newHistory, activeSheet.historyIndex);
   };
 
   const handleDeleteHistoryItem = (actionId: string) => {
-    // This is a "soft delete" by hiding, actual removal is complex with undo/redo
-    handleToggleHistoryVisibility(actionId);
-    // For a true delete:
-    // const newHistory = activeSheet.drawingHistory.filter(action => action.id !== actionId);
-    // // Adjust historyIndex carefully if items before/at current index are removed
-    // let newIndex = activeSheet.historyIndex;
-    // const removedActionIndex = activeSheet.drawingHistory.findIndex(a => a.id === actionId);
-    // if (removedActionIndex !== -1 && removedActionIndex <= newIndex) {
-    //   newIndex = Math.max(-1, newIndex -1);
-    // }
-    // updateSheetHistory(activeSheetId, newHistory, newIndex);
+    handleToggleHistoryVisibility(actionId); // Soft delete for now
   };
 
-  const handleSelectHistoryItemForEditing = (actionId: string, type: 'text' | 'shape' | 'image') => {
+  const handleSelectHistoryItemForEditing = (actionId: string, type: DrawingAction['type']) => {
     if (type === 'text') {
       setSelectedTool('text');
       loadTextElementForEditing(actionId);
+    } else if (type === 'rectangle' || type === 'circle' || type === 'triangle') {
+        const latestAction = activeSheet.drawingHistory
+            .slice(0, activeSheet.historyIndex + 1)
+            .reverse()
+            .find(a => a.id === actionId && (a.type === 'rectangle' || a.type === 'circle' || a.type === 'triangle')) as ShapeAction | undefined;
+        if (latestAction) {
+            setSelectedShapeId(actionId);
+            setFillColor(latestAction.fillColor || '#79B4B7');
+            setStrokeColor(latestAction.strokeColor);
+            setStrokeWidth(latestAction.strokeWidth);
+            setIsFillEnabled(latestAction.isFilled !== undefined ? latestAction.isFilled : true);
+            setCurrentEditingTextId(null);
+            setIsTextInputVisible(false);
+        }
     }
-    // Placeholder for shape/image editing
   };
+  
+  const handleShapeSelect = (id: string, data: ShapeAction) => {
+    setSelectedShapeId(id);
+    setFillColor(data.fillColor || '#79B4B7'); // Default if undefined
+    setStrokeColor(data.strokeColor);
+    setStrokeWidth(data.strokeWidth);
+    setIsFillEnabled(data.isFilled !== undefined ? data.isFilled : true); // Default if undefined
+    setCurrentEditingTextId(null); // Deselect text
+    setIsTextInputVisible(false);
+    setSelectedTool(data.type); // Optionally switch tool to the selected shape's type
+  };
+
 
   const currentTextFormatting = { fontFamily, fontSize, textColor, textAlign, isBold: isTextBold, isItalic: isTextItalic, isUnderline: isTextUnderline };
 
@@ -473,13 +551,13 @@ export default function CanvasCraftPage() {
             <HistorySidebar
                 history={activeSheet.drawingHistory.slice(0, activeSheet.historyIndex + 1)}
                 onToggleVisibility={handleToggleHistoryVisibility}
-                onDeleteItem={handleDeleteHistoryItem} // For now, "delete" just toggles visibility
+                onDeleteItem={handleDeleteHistoryItem}
                 onSelectItemForEditing={handleSelectHistoryItemForEditing}
                 className="h-full"
             />
         </SheetContent>
       </ShadcnSheet>
-      
+
       <div className="flex flex-col flex-1 overflow-hidden">
         <header className="p-2 sm:p-4 border-b">
             <div className="flex items-center mb-2">
@@ -495,7 +573,9 @@ export default function CanvasCraftPage() {
                   <Brush className="h-6 w-6 text-primary" />
                   <Select value={selectedTool} onValueChange={(value) => {
                     setSelectedTool(value as DrawingTool);
-                    setIsTextInputVisible(false); setCurrentEditingTextId(null);
+                    setIsTextInputVisible(false); // Hide text input when switching tools
+                    // setCurrentEditingTextId(null); // Keep text selected for styling if text tool is re-selected
+                    // setSelectedShapeId(null); // Keep shape selected for styling
                     if (value === 'image' && !pendingImage) { fileInputRef.current?.click(); }
                     else if (value !== 'image' && pendingImage) { handleCancelImage(); }
                   }}>
@@ -523,7 +603,7 @@ export default function CanvasCraftPage() {
                         <input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} className={commonInputClass} aria-label="Select stroke color"/>
                       </div>
                     )}
-                    {isShapeTool && (
+                    {(isShapeTool || selectedShapeId) && selectedTool !== 'line' && selectedTool !== 'freehand' && selectedTool !== 'eraser' && (
                       <>
                       <div className="flex items-center gap-2" title="Fill Color">
                         <PaintBucket className="h-6 w-6 text-primary" />
@@ -619,17 +699,17 @@ export default function CanvasCraftPage() {
                               <p className="text-sm text-muted-foreground">Click and drag image to move. Use handles to resize.</p>
                                <div className="flex gap-2 items-center">
                                   <Label htmlFor="imgWidth" className="text-sm">W:</Label>
-                                  <Input id="imgWidth" type="number" value={Math.round(pendingImage.currentWidth)} 
+                                  <Input id="imgWidth" type="number" value={Math.round(pendingImage.currentWidth)}
                                          onChange={(e) => {
                                              const newWidth = parseInt(e.target.value, 10);
                                              if (!isNaN(newWidth) && newWidth > 0) {
                                                  setPendingImage(p => p ? {...p, currentWidth: newWidth, currentHeight: newWidth / p.aspectRatio} : null);
                                              }
                                          }}
-                                         className="w-20 h-9 text-xs" 
+                                         className="w-20 h-9 text-xs"
                                   />
                                   <Label htmlFor="imgHeight" className="text-sm">H:</Label>
-                                  <Input id="imgHeight" type="number" value={Math.round(pendingImage.currentHeight)} 
+                                  <Input id="imgHeight" type="number" value={Math.round(pendingImage.currentHeight)}
                                          onChange={(e) => {
                                               const newHeight = parseInt(e.target.value, 10);
                                               if (!isNaN(newHeight) && newHeight > 0) {
@@ -650,7 +730,7 @@ export default function CanvasCraftPage() {
           </aside>
         )}
 
-        <SheetTabs 
+        <SheetTabs
           sheets={sheets}
           activeSheetId={activeSheetId}
           onAddSheet={handleAddSheet}
@@ -663,10 +743,10 @@ export default function CanvasCraftPage() {
 
         <main ref={mainCanvasAreaRef} className="flex-1 mx-2 mb-2 sm:mx-4 sm:mb-4 mt-2 p-0 overflow-hidden relative">
           <div className="w-full h-full bg-white rounded-lg shadow-inner overflow-hidden border border-border"
-            onClick={ selectedTool === 'text' && !pendingImage ? handleCanvasInteraction : undefined}
+            onClick={ (selectedTool === 'text' && !pendingImage && !selectedShapeId) ? handleCanvasInteraction : undefined}
           >
              <CanvasRenderer
-              key={activeSheetId} // Force re-mount on sheet switch to clear internal state if any
+              key={activeSheetId} 
               ref={canvasComponentRef}
               drawingHistory={activeSheet.drawingHistory}
               historyIndex={activeSheet.historyIndex}
@@ -677,15 +757,16 @@ export default function CanvasCraftPage() {
               isFillEnabled={isFillEnabled}
               currentTextFormatting={currentTextFormatting}
               currentEditingTextId={currentEditingTextId}
+              selectedShapeId={selectedShapeId}
               onCommitAction={handleCommitAction}
               onTextSelect={(id) => { setSelectedTool('text'); loadTextElementForEditing(id); }}
+              onShapeSelect={handleShapeSelect}
               onTextDragEnd={(id, x, y, textElement) => {
                   if (textElement) {
-                    // Create a new action for the updated position
                     const updatedData: TextElementData = { ...textElement, x, y };
                      handleCommitAction({type: 'text', data: updatedData });
-                     setCurrentEditingTextId(id); 
-                     loadTextElementForEditing(id); 
+                     setCurrentEditingTextId(id);
+                     loadTextElementForEditing(id);
                   }
               }}
             />
@@ -699,15 +780,15 @@ export default function CanvasCraftPage() {
                       top: `${pendingImage.currentY}px`,
                       width: `${pendingImage.currentWidth}px`,
                       height: `${pendingImage.currentHeight}px`,
-                      touchAction: 'none', 
+                      touchAction: 'none',
                   }}
                   onMouseDown={(e) => onImagePreviewMouseDown(e, 'move')}
               >
                   <img src={pendingImage.src} alt="Preview" className="w-full h-full object-contain pointer-events-none" />
-                  <div 
+                  <div
                       className="absolute -bottom-2 -right-2 w-4 h-4 bg-primary rounded-full cursor-se-resize border-2 border-background shadow-md"
                       onMouseDown={(e) => onImagePreviewMouseDown(e, 'resize-br')}
-                      onTouchStart={(e) => { 
+                      onTouchStart={(e) => {
                           e.stopPropagation();
                           if (!pendingImage || !mainCanvasAreaRef.current) return;
                           const touch = e.touches[0];
@@ -727,10 +808,10 @@ export default function CanvasCraftPage() {
             <Input
               ref={textInputRef} type="text" value={textInputValue}
               onChange={(e) => setTextInputValue(e.target.value)}
-              onBlur={handleTextInputCommit}
+              onBlur={handleTextInputCommit} // Committing on blur might be too aggressive, consider explicit save button
               onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleTextInputCommit(); }
-                  if (e.key === 'Escape') { e.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); setCurrentEditingTextId(null); }
+                  if (e.key === 'Escape') { e.preventDefault(); setIsTextInputVisible(false); setTextInputValue(''); }
               }}
               className="absolute z-10 bg-background border border-primary shadow-lg p-2 rounded-md text-sm"
               style={getTextInputStyle()}
@@ -743,7 +824,7 @@ export default function CanvasCraftPage() {
              <HistorySidebar
                 history={activeSheet.drawingHistory.slice(0, activeSheet.historyIndex + 1)}
                 onToggleVisibility={handleToggleHistoryVisibility}
-                onDeleteItem={handleDeleteHistoryItem} // For now, "delete" just toggles visibility
+                onDeleteItem={handleDeleteHistoryItem}
                 onSelectItemForEditing={handleSelectHistoryItemForEditing}
                 className="h-full"
             />
